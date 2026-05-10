@@ -10,8 +10,17 @@ export const CommandId = {
     TemperatureSensors: 0x96,
     BalancerState: 0x97,
     AlarmFlags: 0x98,
+    SetDischargeMosfet: 0xd9,
+    SetChargeMosfet: 0xda,
 } as const;
 export type CommandId = (typeof CommandId)[keyof typeof CommandId];
+
+/** Build the 8-byte payload for the MOSFET on/off writes (0xD9, 0xDA). */
+export function buildMosfetPayload(on: boolean): Uint8Array {
+    const p = new Uint8Array(8);
+    p[0] = on ? 1 : 0;
+    return p;
+}
 
 export interface PackMeasurements {
     voltage: number;

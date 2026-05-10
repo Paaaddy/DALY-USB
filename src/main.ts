@@ -2,6 +2,7 @@ import * as utils from "@iobroker/adapter-core";
 import {
     ALARM_FLAGS,
     CommandId,
+    buildMosfetPayload,
     combineCellVoltageFrames,
     combineTemperatureFrames,
     parseAlarmFlags,
@@ -81,6 +82,8 @@ class DalyUsbAdapter extends utils.Adapter {
             this.log.error(`discovery failed: ${(err as Error).message}`);
             return;
         }
+
+        this.subscribeStates("control.*");
 
         this.poller = new Poller(this.config.pollIntervalMs, () => this.poll(), this.log);
         this.poller.start();
@@ -276,6 +279,17 @@ class DalyUsbAdapter extends utils.Adapter {
         await this.makeChannel("temps", "Temperature sensors");
         await this.makeChannel("balancer", "Cell balancer state");
         await this.makeChannel("alarms", "Alarm flags");
+        await this.makeChannel("control", "Writable controls");
+        await this.makeWritableBool(
+            "control.chargeMosfet",
+            "Charge MOSFET on/off",
+            "switch.power",
+        );
+        await this.makeWritableBool(
+            "control.dischargeMosfet",
+            "Discharge MOSFET on/off",
+            "switch.power",
+        );
         await this.makeNumber("info.voltage", "Pack voltage", "V", "value.voltage");
         await this.makeNumber("info.current", "Pack current", "A", "value.current");
         await this.makeNumber("info.soc", "State of charge", "%", "value.battery");
@@ -385,6 +399,14 @@ class DalyUsbAdapter extends utils.Adapter {
         });
     }
 
+    private async makeWritableBool(id: string, name: string, role: string): Promise<void> {
+        await this.setObjectNotExistsAsync(id, {
+            type: "state",
+            common: { type: "boolean", role, name, read: true, write: true, def: false },
+            native: {},
+        });
+    }
+
     private async deleteStaleChannelMembers(
         channel: string,
         prefix: string,
@@ -413,8 +435,29 @@ class DalyUsbAdapter extends utils.Adapter {
         }
     }
 
-    private onStateChange(_id: string, _state: ioBroker.State | null | undefined): void {
-        /* wired up in M5 */
+    private onStateChange(id: string, state: ioBroker.State | null | undefined): void {
+        if (!state || state.ack) return;
+        if (typeof state.val !== "boolean") return;
+        const local = id.slice(this.namespace.length + 1);
+        if (local === "control.chargeMosfet") {
+            void this.handleMosfetWrite(CommandId.SetChargeMosfet, state.val, id);
+        } else if (local === "control.dischargeMosfet") {
+            void this.handleMosfetWrite(CommandId.SetDischargeMosfet, state.val, id);
+        }
+    }
+
+    private async handleMosfetWrite(command: number, on: boolean, id: string): Promise<void> {
+        if (!this.transport) return;
+        try {
+            const req = buildRequest(this.config.hostAddress, command, buildMosfetPayload(on));
+            await this.transport.request(req, 1, command);
+            this.log.info(`set ${id} -> ${on}`);
+        } catch (err) {
+            this.log.warn(`failed to write ${id}=${on}: ${(err as Error).message}`);
+            return;
+        }
+        await this.tickMosfetStatus();
+        await this.setState(id, on, true);
     }
 }
 
