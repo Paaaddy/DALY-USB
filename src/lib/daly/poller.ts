@@ -29,7 +29,7 @@ export class Poller {
             }
         };
         void run();
-        this.timer = setInterval(run, this.intervalMs);
+        this.timer = setInterval(() => void run(), this.intervalMs);
         this.timer.unref?.();
     }
 

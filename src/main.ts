@@ -21,7 +21,6 @@ import { buildRequest, type ParsedFrame } from "./lib/daly/protocol";
 import { DalyTransport } from "./lib/daly/transport";
 
 declare global {
-    // eslint-disable-next-line @typescript-eslint/no-namespace
     namespace ioBroker {
         interface AdapterConfig {
             serialPort: string;
