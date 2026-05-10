@@ -1,5 +1,9 @@
 import { readU16BE } from "./protocol";
 
+/** Hard upper bounds from the DALY UART spec. Values above these are taken to be garbage. */
+export const MAX_CELLS = 48;
+export const MAX_TEMP_SENSORS = 16;
+
 export const CommandId = {
     PackMeasurements: 0x90,
     MinMaxCellVoltage: 0x91,
@@ -146,11 +150,21 @@ export function parseCellVoltageFrame(payload: Buffer): CellVoltageFrame {
     };
 }
 
-/** Reassemble per-cell voltages from N frames in any order. */
+/**
+ * Reassemble per-cell voltages from N frames. Throws if the received frame
+ * index set isn't exactly {1..ceil(cellCount/3)} so a duplicated or missing
+ * frame can't silently leave a cell at 0 V.
+ */
 export function combineCellVoltageFrames(
     frames: readonly CellVoltageFrame[],
     cellCount: number,
 ): number[] {
+    const expected = Math.ceil(cellCount / 3);
+    assertFrameIndexSet(
+        frames.map(f => f.frameIndex),
+        expected,
+        "cell voltage",
+    );
     const out = new Array<number>(cellCount).fill(0);
     for (const f of frames) {
         const base = (f.frameIndex - 1) * 3;
@@ -181,6 +195,12 @@ export function combineTemperatureFrames(
     frames: readonly TemperatureFrame[],
     sensorCount: number,
 ): number[] {
+    const expected = Math.ceil(sensorCount / 7);
+    assertFrameIndexSet(
+        frames.map(f => f.frameIndex),
+        expected,
+        "temperature",
+    );
     const out = new Array<number>(sensorCount).fill(0);
     for (const f of frames) {
         const base = (f.frameIndex - 1) * 7;
@@ -191,6 +211,37 @@ export function combineTemperatureFrames(
     }
     return out;
 }
+
+function assertFrameIndexSet(received: readonly number[], expected: number, label: string): void {
+    if (received.length !== expected) {
+        throw new Error(
+            `${label}: expected ${expected} frame(s), got ${received.length}`,
+        );
+    }
+    const seen = new Set<number>();
+    for (const idx of received) {
+        if (idx < 1 || idx > expected) {
+            throw new Error(`${label}: frame index ${idx} out of range 1..${expected}`);
+        }
+        if (seen.has(idx)) {
+            throw new Error(`${label}: duplicate frame index ${idx}`);
+        }
+        seen.add(idx);
+    }
+}
+
+/**
+ * Plausibility checks for parsed BMS values. Out-of-range values are
+ * almost always wire glitches; refusing to publish them protects
+ * downstream automations from operating on phantom data.
+ */
+export const Bounds = {
+    packVoltage: (v: number): boolean => v >= 5 && v <= 100,
+    packCurrent: (a: number): boolean => a >= -500 && a <= 500,
+    soc: (s: number): boolean => s >= 0 && s <= 110,
+    cellVoltage: (v: number): boolean => v >= 0.5 && v <= 4.5,
+    temperature: (t: number): boolean => t >= -40 && t <= 100,
+} as const;
 
 /**
  * 0x97 — balancer state. The first 6 payload bytes form a 48-bit bitmap;

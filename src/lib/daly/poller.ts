@@ -7,7 +7,7 @@ export interface PollerLogger {
 
 export class Poller {
     private timer?: NodeJS.Timeout;
-    private running = false;
+    private currentTick?: Promise<void>;
 
     constructor(
         private readonly intervalMs: number,
@@ -18,14 +18,18 @@ export class Poller {
     start(): void {
         if (this.timer) return;
         const run = async (): Promise<void> => {
-            if (this.running) return;
-            this.running = true;
+            if (this.currentTick) return;
+            this.currentTick = (async () => {
+                try {
+                    await this.tick();
+                } catch (err) {
+                    this.log.warn(`poll tick failed: ${(err as Error).message}`);
+                }
+            })();
             try {
-                await this.tick();
-            } catch (err) {
-                this.log.warn(`poll tick failed: ${(err as Error).message}`);
+                await this.currentTick;
             } finally {
-                this.running = false;
+                this.currentTick = undefined;
             }
         };
         void run();
@@ -33,10 +37,18 @@ export class Poller {
         this.timer.unref?.();
     }
 
-    stop(): void {
+    /**
+     * Stops the interval and waits for any in-flight tick to finish so the
+     * caller can safely tear down resources the tick depends on (e.g. close
+     * the serial port) without racing.
+     */
+    async stop(): Promise<void> {
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = undefined;
+        }
+        if (this.currentTick) {
+            await this.currentTick.catch(() => undefined);
         }
     }
 }

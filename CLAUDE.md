@@ -42,11 +42,16 @@ src/
 
 **Key invariants worth preserving:**
 
-- `transport.ts` serialises every request through a single async queue (`this.queue.then(exec, exec)`) so polls and writes from `onStateChange` cannot interleave bytes on the bus. Anything that touches the BMS must go through `DalyTransport.request()`.
+- `transport.ts` serialises every request through a single async queue (`this.queue.then(exec, exec)`) so polls and writes from `onStateChange` cannot interleave bytes on the bus. Anything that touches the BMS must go through `DalyTransport.request()`. After `close()` the transport flips a `closed` flag and rejects subsequent `request()` calls synchronously with `TransportClosedError` — required so writes that arrive during `onUnload` cannot land on a torn-down port.
 - All parsers in `commands.ts` are pure functions over a `Buffer` payload. Add new commands by adding a parser there and a corresponding `tick<X>()` in `main.ts`. Do not parse bytes inline in `main.ts`.
-- `main.poll()` issues every read command per tick, each wrapped in `guarded(label, fn)` so a single command failure logs at warn (or debug, on repeats) and the rest of the tick continues. This is what makes the adapter resilient to transient BMS hiccups.
-- Auto-discovery (`main.discover()`) runs once after the port opens, reads 0x94, and caches `BmsConfig { cellCount, tempSensorCount }`. `syncDynamicObjects()` then creates exactly N cell + balancer objects and M temp-sensor objects, deleting any stragglers from a previous run with a different cell count.
-- `subscribeStates` is limited to `control.*`. Read-only states use `setStateChangedAsync` to keep DB writes minimal.
+- `main.poll()` issues every read command per tick, each wrapped in `guarded(label, fn)` (returns `false` on failure). After 3 consecutive ticks with any failure `info.connection` flips false; on the next clean tick it flips back to true and `info.lastSuccessfulTick` is updated.
+- Plausibility bounds in `Bounds` (commands.ts) reject impossible parser outputs (SOC > 110 %, voltage outside 5–100 V, cell V outside 0.5–4.5 V, etc.) so wire glitches never reach ioBroker as fact. `tick*` functions throw on out-of-range — `guarded()` then suppresses the publish.
+- `combineCellVoltageFrames` / `combineTemperatureFrames` strictly require the received `frameIndex` set to be exactly `{1..ceil(n/k)}`. Duplicate or missing frames throw rather than silently leaving cells/sensors at 0 V / -40 °C.
+- Auto-discovery (`main.discover()`) reads 0x94 once, clamps to `MAX_CELLS=48` / `MAX_TEMP_SENSORS=16`, and refuses to start if the BMS reports impossible counts. `syncDynamicObjects()` creates exactly N cell + balancer objects and M temp-sensor objects, deleting any stragglers from a previous run with a different cell count.
+- MOSFET writes are gated by `native.allowMosfetWrites` (default `false`). When enabled, `handleMosfetWrite()` sends the write, runs `tickMosfetStatus()` to read the BMS-reported MOS state, and only acks the writable `control.*` state if the readback matches the requested value — otherwise the state stays at `ack: false` so automations can detect a rejected write.
+- `bmsLife` is the BMS's internal heartbeat byte. `tickMosfetStatus` watches it; if it fails to advance for 5 consecutive successful reads, `info.connection` flips false (BMS is locked up even though the bus is open).
+- `subscribeStates` is limited to `control.*` and only happens when `allowMosfetWrites` is true. Read-only states use `setStateChangedAsync` to keep DB writes minimal.
+- `onUnload` order matters: `unsubscribeStatesAsync('control.*')` first (no new writes accepted), then `await poller.stop()` (waits for the in-flight tick), then `await transport.close()`, then ack `info.connection=false`. Reordering this re-introduces the unload race.
 
 ## DALY UART protocol notes
 
