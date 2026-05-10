@@ -1,0 +1,70 @@
+{
+  "common": {
+    "name": "daly-usb",
+    "version": "0.0.1",
+    "news": {
+      "0.0.1": {
+        "en": "initial release",
+        "de": "Erstveröffentlichung"
+      }
+    },
+    "title": "DALY BMS via USB-UART",
+    "titleLang": {
+      "en": "DALY BMS via USB-UART",
+      "de": "DALY BMS über USB-UART"
+    },
+    "desc": {
+      "en": "ioBroker adapter that talks to a DALY BMS over a USB-UART adapter.",
+      "de": "ioBroker-Adapter zur Anbindung eines DALY BMS über USB-UART."
+    },
+    "authors": ["Paaaddy <noreply@example.com>"],
+    "keywords": ["daly", "bms", "battery", "usb", "uart"],
+    "license": "MIT",
+    "platform": "Javascript/Node.js",
+    "main": "build/main.js",
+    "icon": "daly-usb.png",
+    "enabled": true,
+    "extIcon": "https://raw.githubusercontent.com/Paaaddy/DALY-USB/main/admin/daly-usb.png",
+    "readme": "https://github.com/Paaaddy/DALY-USB/blob/main/README.md",
+    "loglevel": "info",
+    "mode": "daemon",
+    "type": "energy",
+    "compact": true,
+    "connectionType": "local",
+    "dataSource": "poll",
+    "messagebox": false,
+    "supportCustoms": false,
+    "dependencies": [{ "js-controller": ">=5.0.19" }],
+    "globalDependencies": [{ "admin": ">=6.13.16" }],
+    "adminUI": { "config": "json" }
+  },
+  "native": {
+    "serialPort": "/dev/ttyUSB0",
+    "baudRate": 9600,
+    "hostAddress": 64,
+    "pollIntervalMs": 5000,
+    "requestTimeoutMs": 1000
+  },
+  "objects": [],
+  "instanceObjects": [
+    {
+      "_id": "info",
+      "type": "channel",
+      "common": { "name": "Information" },
+      "native": {}
+    },
+    {
+      "_id": "info.connection",
+      "type": "state",
+      "common": {
+        "role": "indicator.connected",
+        "name": "Device or service connected",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    }
+  ]
+}

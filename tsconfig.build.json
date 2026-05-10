@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "@iobroker/adapter-core"]
+  },
+  "exclude": ["node_modules", "build", "src/**/*.test.ts"]
+}

@@ -1,0 +1,53 @@
+{
+  "type": "panel",
+  "items": {
+    "serialPort": {
+      "type": "text",
+      "label": "Serial port",
+      "newLine": true,
+      "sm": 12,
+      "md": 6,
+      "default": "/dev/ttyUSB0",
+      "help": "Path to the USB-UART device, e.g. /dev/ttyUSB0 or a stable /dev/serial/by-id/... path"
+    },
+    "baudRate": {
+      "type": "number",
+      "label": "Baud rate",
+      "sm": 12,
+      "md": 6,
+      "default": 9600,
+      "min": 300,
+      "max": 921600
+    },
+    "hostAddress": {
+      "type": "number",
+      "label": "Host address (decimal)",
+      "newLine": true,
+      "sm": 12,
+      "md": 6,
+      "default": 64,
+      "min": 0,
+      "max": 255,
+      "help": "DALY upper-computer host byte. 64 (0x40) is the default; some BMS firmwares accept 128 (0x80)."
+    },
+    "pollIntervalMs": {
+      "type": "number",
+      "label": "Poll interval (ms)",
+      "sm": 12,
+      "md": 6,
+      "default": 5000,
+      "min": 500,
+      "max": 600000
+    },
+    "requestTimeoutMs": {
+      "type": "number",
+      "label": "Request timeout (ms)",
+      "newLine": true,
+      "sm": 12,
+      "md": 6,
+      "default": 1000,
+      "min": 100,
+      "max": 10000
+    }
+  }
+}
