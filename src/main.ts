@@ -43,6 +43,8 @@ class DalyUsbAdapter extends utils.Adapter {
     private poller?: Poller;
     private bms?: BmsConfig;
     private lastVoltage = 0;
+    private readonly readRequestCache = new Map<number, Buffer>();
+    private readonly failureSignatures = new Map<string, string>();
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({ ...options, name: "daly-usb" });
@@ -250,7 +252,7 @@ class DalyUsbAdapter extends utils.Adapter {
         parse: (payload: Buffer) => T,
     ): Promise<T> {
         if (!this.transport) throw new Error("transport not initialised");
-        const req = buildRequest(this.config.hostAddress, command);
+        const req = this.readRequest(command);
         const [frame] = await this.transport.request(req, expectedFrames, command);
         return parse(frame.payload);
     }
@@ -261,16 +263,41 @@ class DalyUsbAdapter extends utils.Adapter {
         parse: (payload: Buffer) => T,
     ): Promise<T[]> {
         if (!this.transport) throw new Error("transport not initialised");
-        const req = buildRequest(this.config.hostAddress, command);
+        const req = this.readRequest(command);
         const frames: ParsedFrame[] = await this.transport.request(req, expectedFrames, command);
         return frames.map(f => parse(f.payload));
     }
 
+    private readRequest(command: number): Buffer {
+        let buf = this.readRequestCache.get(command);
+        if (!buf) {
+            buf = buildRequest(this.config.hostAddress, command);
+            this.readRequestCache.set(command, buf);
+        }
+        return buf;
+    }
+
+    /**
+     * Run `fn`. On error, log only the first occurrence of a particular
+     * message at warn level; identical repeats drop to debug to avoid
+     * filling the log when a BMS is unplugged. Recovery is logged once at
+     * info.
+     */
     private async guarded(label: string, fn: () => Promise<void>): Promise<void> {
         try {
             await fn();
+            if (this.failureSignatures.has(label)) {
+                this.failureSignatures.delete(label);
+                this.log.info(`${label} recovered`);
+            }
         } catch (err) {
-            this.log.warn(`${label} failed: ${(err as Error).message}`);
+            const msg = (err as Error).message;
+            if (this.failureSignatures.get(label) === msg) {
+                this.log.debug(`${label} failed (repeat): ${msg}`);
+            } else {
+                this.failureSignatures.set(label, msg);
+                this.log.warn(`${label} failed: ${msg}`);
+            }
         }
     }
 
