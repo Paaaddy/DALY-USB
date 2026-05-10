@@ -91,6 +91,26 @@ controls are enabled. Read this before flipping the toggle.
 | `alarms.<key>` | boolean | – | one boolean per documented alarm bit (see `ALARM_FLAGS` in `src/lib/daly/commands.ts`) |
 | `control.chargeMosfet`, `control.dischargeMosfet` | boolean (writable) | – | only honoured when `allowMosfetWrites` is true |
 
+## Open TODOs
+
+Things that are deliberately deferred. PRs welcome.
+
+- **Hardware verification.** The implementation is complete against the
+  protocol spec but has not yet been validated end-to-end against a physical
+  DALY BMS. Anyone with a BMS and USB-UART dongle who tries this adapter
+  please open an issue with the model + firmware version and any deltas you see.
+- **`control.setSoc` (0x21) write.** Skipped because the payload encoding
+  varies across firmware revisions — some expect a plain SOC value, others
+  expect an RTC-and-SOC bundle. Add it once we can verify against real
+  hardware.
+- **Adapter icon.** `admin/daly-usb.png` is a 128×128 placeholder. Replace
+  with a real logo.
+- **Integration test against real-firmware fixtures.** `test/integration/`
+  currently only spins up js-controller; adding recorded BMS responses would
+  let us test the full poll path without hardware.
+- **CAN-bus DALY support.** Out of scope for `iobroker.daly-usb` (which is
+  UART-only) but worth a sibling adapter someday.
+
 ## Development
 
 ```bash
@@ -106,6 +126,26 @@ npm test               # test:ts + test:package
 The DALY UART protocol details are documented in `CLAUDE.md`. The original
 Python proof of concept lives in `reference.py` for reference; it implements
 only `0x90` and `0x95` and is not used by the adapter.
+
+### Releases
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please).
+Every push to `main` updates a long-lived release PR that bumps the version
+in `package.json` and `io-package.json`'s `common.version`. When that PR is
+approved and merged, GitHub Actions creates a tagged GitHub Release and
+attaches the packed adapter (`iobroker.daly-usb-<version>.tgz`) as a release
+asset.
+
+Commit messages need to follow [Conventional Commits](https://www.conventionalcommits.org)
+so release-please can decide the semver bump:
+
+- `feat: …` — minor bump
+- `fix: …` — patch bump
+- `feat!: …` or a `BREAKING CHANGE:` footer — major bump
+- `chore:`, `docs:`, `test:`, `refactor:`, `ci:` — no version bump
+
+Anything that lands on `main` without a conventional prefix is treated as
+"misc" and only contributes to the changelog body, not the version bump.
 
 ## License
 
