@@ -34,3 +34,59 @@ export function parsePackMeasurements(payload: Buffer): PackMeasurements {
         soc: readU16BE(payload, 6) / 10,
     };
 }
+
+export interface MinMaxCellVoltage {
+    maxVoltage: number;
+    maxCellNumber: number;
+    minVoltage: number;
+    minCellNumber: number;
+}
+
+/** 0x91 — min/max cell voltage in mV plus 1-based cell numbers. */
+export function parseMinMaxCellVoltage(payload: Buffer): MinMaxCellVoltage {
+    return {
+        maxVoltage: readU16BE(payload, 0) / 1000,
+        maxCellNumber: payload[2],
+        minVoltage: readU16BE(payload, 3) / 1000,
+        minCellNumber: payload[5],
+    };
+}
+
+export interface MinMaxTemperature {
+    maxTemperature: number;
+    maxSensorNumber: number;
+    minTemperature: number;
+    minSensorNumber: number;
+}
+
+/** 0x92 — min/max temperature. DALY encodes as `actual + 40` (0 = -40°C). */
+export function parseMinMaxTemperature(payload: Buffer): MinMaxTemperature {
+    return {
+        maxTemperature: payload[0] - 40,
+        maxSensorNumber: payload[1],
+        minTemperature: payload[2] - 40,
+        minSensorNumber: payload[3],
+    };
+}
+
+export interface StatusInfo {
+    cellCount: number;
+    tempSensorCount: number;
+    chargerConnected: boolean;
+    loadConnected: boolean;
+    cycleCount: number;
+}
+
+/**
+ * 0x94 — pack status info. Carries cell/temp-sensor counts used for
+ * auto-discovery, plus charger/load presence and cycle count.
+ */
+export function parseStatusInfo(payload: Buffer): StatusInfo {
+    return {
+        cellCount: payload[0],
+        tempSensorCount: payload[1],
+        chargerConnected: payload[2] === 1,
+        loadConnected: payload[3] === 1,
+        cycleCount: readU16BE(payload, 5),
+    };
+}
