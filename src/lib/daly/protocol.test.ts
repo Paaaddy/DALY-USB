@@ -48,7 +48,7 @@ describe("protocol.buildRequest", () => {
 });
 
 describe("protocol.parseFrame", () => {
-    function goodFrame(command = 0x90, payload: number[] = new Array(8).fill(0)): Buffer {
+    function goodFrame(command = 0x90, payload: number[] = new Array<number>(8).fill(0)): Buffer {
         const buf = Buffer.alloc(FRAME_LENGTH);
         buf[0] = START_BYTE;
         buf[1] = 0x01;

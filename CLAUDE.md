@@ -24,7 +24,7 @@ Run a single unit test file directly:
 npx mocha --config test/mocharc.custom.json "src/lib/daly/protocol.test.ts"
 ```
 
-`npm run lint` is just a strict typecheck — there is no ESLint config yet. Add one if you need style rules.
+`npm run lint` runs ESLint (flat config in `eslint.config.mjs`, type-checked rules from `typescript-eslint`) and then `tsc --noEmit`. The project file passed to ESLint's typed parser is `tsconfig.json`, so any `.ts` source must be reachable from there.
 
 ## Architecture
 
