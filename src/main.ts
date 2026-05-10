@@ -1,12 +1,22 @@
 import * as utils from "@iobroker/adapter-core";
 import {
+    ALARM_FLAGS,
     CommandId,
+    combineCellVoltageFrames,
+    combineTemperatureFrames,
+    parseAlarmFlags,
+    parseBalancerState,
+    parseCellVoltageFrame,
+    parseMinMaxCellVoltage,
+    parseMinMaxTemperature,
+    parseMosfetStatus,
     parsePackMeasurements,
     parseStatusInfo,
+    parseTemperatureFrame,
     type StatusInfo,
 } from "./lib/daly/commands";
 import { Poller } from "./lib/daly/poller";
-import { buildRequest } from "./lib/daly/protocol";
+import { buildRequest, type ParsedFrame } from "./lib/daly/protocol";
 import { DalyTransport } from "./lib/daly/transport";
 
 declare global {
@@ -31,6 +41,7 @@ class DalyUsbAdapter extends utils.Adapter {
     private transport?: DalyTransport;
     private poller?: Poller;
     private bms?: BmsConfig;
+    private lastVoltage = 0;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({ ...options, name: "daly-usb" });
@@ -42,6 +53,7 @@ class DalyUsbAdapter extends utils.Adapter {
     private async onReady(): Promise<void> {
         await this.setState("info.connection", false, true);
         await this.ensureCoreObjects();
+        await this.ensureAlarmObjects();
 
         this.transport = new DalyTransport({
             path: this.config.serialPort,
@@ -75,7 +87,7 @@ class DalyUsbAdapter extends utils.Adapter {
     }
 
     private async discover(): Promise<BmsConfig> {
-        const status = await this.readStatus();
+        const status = await this.runCommand(CommandId.StatusInfo, 1, parseStatusInfo);
         if (status.cellCount === 0 || status.tempSensorCount === 0) {
             throw new Error(
                 `BMS reported impossible config (cells=${status.cellCount}, temps=${status.tempSensorCount})`,
@@ -84,108 +96,293 @@ class DalyUsbAdapter extends utils.Adapter {
         return { cellCount: status.cellCount, tempSensorCount: status.tempSensorCount };
     }
 
-    private async readStatus(): Promise<StatusInfo> {
-        if (!this.transport) throw new Error("transport not initialised");
-        const req = buildRequest(this.config.hostAddress, CommandId.StatusInfo);
-        const [frame] = await this.transport.request(req, 1, CommandId.StatusInfo);
-        return parseStatusInfo(frame.payload);
+    private async poll(): Promise<void> {
+        if (!this.transport || !this.bms) return;
+        await this.tickPackMeasurements();
+        await this.tickMinMaxCellVoltage();
+        await this.tickMinMaxTemperature();
+        await this.tickMosfetStatus();
+        await this.tickStatusInfo();
+        await this.tickCellVoltages(this.bms.cellCount);
+        await this.tickTemperatures(this.bms.tempSensorCount);
+        await this.tickBalancer(this.bms.cellCount);
+        await this.tickAlarms();
     }
 
-    private async poll(): Promise<void> {
-        if (!this.transport) return;
-        const req = buildRequest(this.config.hostAddress, CommandId.PackMeasurements);
-        const [frame] = await this.transport.request(req, 1, CommandId.PackMeasurements);
-        const m = parsePackMeasurements(frame.payload);
-        await this.setStateChangedAsync("info.voltage", m.voltage, true);
-        await this.setStateChangedAsync("info.current", m.current, true);
-        await this.setStateChangedAsync("info.soc", m.soc, true);
+    private async tickPackMeasurements(): Promise<void> {
+        await this.guarded("0x90", async () => {
+            const m = await this.runCommand(CommandId.PackMeasurements, 1, parsePackMeasurements);
+            this.lastVoltage = m.voltage;
+            await this.setStateChangedAsync("info.voltage", m.voltage, true);
+            await this.setStateChangedAsync("info.current", m.current, true);
+            await this.setStateChangedAsync("info.soc", m.soc, true);
+        });
+    }
+
+    private async tickMinMaxCellVoltage(): Promise<void> {
+        await this.guarded("0x91", async () => {
+            const m = await this.runCommand(
+                CommandId.MinMaxCellVoltage,
+                1,
+                parseMinMaxCellVoltage,
+            );
+            await this.setStateChangedAsync("info.minCellVoltage", m.minVoltage, true);
+            await this.setStateChangedAsync("info.maxCellVoltage", m.maxVoltage, true);
+            await this.setStateChangedAsync("info.minCellNumber", m.minCellNumber, true);
+            await this.setStateChangedAsync("info.maxCellNumber", m.maxCellNumber, true);
+            await this.setStateChangedAsync(
+                "info.cellDiff",
+                Number((m.maxVoltage - m.minVoltage).toFixed(3)),
+                true,
+            );
+        });
+    }
+
+    private async tickMinMaxTemperature(): Promise<void> {
+        await this.guarded("0x92", async () => {
+            const m = await this.runCommand(
+                CommandId.MinMaxTemperature,
+                1,
+                parseMinMaxTemperature,
+            );
+            await this.setStateChangedAsync("info.minTemperature", m.minTemperature, true);
+            await this.setStateChangedAsync("info.maxTemperature", m.maxTemperature, true);
+            await this.setStateChangedAsync("info.minSensorNumber", m.minSensorNumber, true);
+            await this.setStateChangedAsync("info.maxSensorNumber", m.maxSensorNumber, true);
+        });
+    }
+
+    private async tickMosfetStatus(): Promise<void> {
+        await this.guarded("0x93", async () => {
+            const m = await this.runCommand(CommandId.MosfetStatus, 1, parseMosfetStatus);
+            await this.setStateChangedAsync("info.bmsState", m.state, true);
+            await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
+            await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+            await this.setStateChangedAsync("info.bmsLife", m.bmsLife, true);
+            await this.setStateChangedAsync(
+                "info.residualCapacity",
+                Number(m.residualCapacityAh.toFixed(3)),
+                true,
+            );
+            const energyKwh = (m.residualCapacityAh * this.lastVoltage) / 1000;
+            await this.setStateChangedAsync(
+                "info.energyRemaining",
+                Number(energyKwh.toFixed(3)),
+                true,
+            );
+        });
+    }
+
+    private async tickStatusInfo(): Promise<void> {
+        await this.guarded("0x94", async () => {
+            const s: StatusInfo = await this.runCommand(
+                CommandId.StatusInfo,
+                1,
+                parseStatusInfo,
+            );
+            await this.setStateChangedAsync("info.cycleCount", s.cycleCount, true);
+            await this.setStateChangedAsync("info.chargerConnected", s.chargerConnected, true);
+            await this.setStateChangedAsync("info.loadConnected", s.loadConnected, true);
+        });
+    }
+
+    private async tickCellVoltages(cellCount: number): Promise<void> {
+        await this.guarded("0x95", async () => {
+            const frames = Math.ceil(cellCount / 3);
+            const parsed = await this.runCommandMulti(
+                CommandId.CellVoltages,
+                frames,
+                parseCellVoltageFrame,
+            );
+            const voltages = combineCellVoltageFrames(parsed, cellCount);
+            for (let i = 0; i < voltages.length; i++) {
+                await this.setStateChangedAsync(
+                    `cells.cell_${i + 1}`,
+                    Number(voltages[i].toFixed(3)),
+                    true,
+                );
+            }
+        });
+    }
+
+    private async tickTemperatures(sensorCount: number): Promise<void> {
+        await this.guarded("0x96", async () => {
+            const frames = Math.ceil(sensorCount / 7);
+            const parsed = await this.runCommandMulti(
+                CommandId.TemperatureSensors,
+                frames,
+                parseTemperatureFrame,
+            );
+            const temps = combineTemperatureFrames(parsed, sensorCount);
+            for (let i = 0; i < temps.length; i++) {
+                await this.setStateChangedAsync(`temps.sensor_${i + 1}`, temps[i], true);
+            }
+        });
+    }
+
+    private async tickBalancer(cellCount: number): Promise<void> {
+        await this.guarded("0x97", async () => {
+            if (!this.transport) return;
+            const req = buildRequest(this.config.hostAddress, CommandId.BalancerState);
+            const [frame] = await this.transport.request(req, 1, CommandId.BalancerState);
+            const flags = parseBalancerState(frame.payload, cellCount);
+            for (let i = 0; i < flags.length; i++) {
+                await this.setStateChangedAsync(`balancer.cell_${i + 1}`, flags[i], true);
+            }
+        });
+    }
+
+    private async tickAlarms(): Promise<void> {
+        await this.guarded("0x98", async () => {
+            const flags = await this.runCommand(CommandId.AlarmFlags, 1, parseAlarmFlags);
+            for (const def of ALARM_FLAGS) {
+                await this.setStateChangedAsync(`alarms.${def.key}`, flags[def.key] ?? false, true);
+            }
+        });
+    }
+
+    private async runCommand<T>(
+        command: number,
+        expectedFrames: number,
+        parse: (payload: Buffer) => T,
+    ): Promise<T> {
+        if (!this.transport) throw new Error("transport not initialised");
+        const req = buildRequest(this.config.hostAddress, command);
+        const [frame] = await this.transport.request(req, expectedFrames, command);
+        return parse(frame.payload);
+    }
+
+    private async runCommandMulti<T>(
+        command: number,
+        expectedFrames: number,
+        parse: (payload: Buffer) => T,
+    ): Promise<T[]> {
+        if (!this.transport) throw new Error("transport not initialised");
+        const req = buildRequest(this.config.hostAddress, command);
+        const frames: ParsedFrame[] = await this.transport.request(req, expectedFrames, command);
+        return frames.map(f => parse(f.payload));
+    }
+
+    private async guarded(label: string, fn: () => Promise<void>): Promise<void> {
+        try {
+            await fn();
+        } catch (err) {
+            this.log.warn(`${label} failed: ${(err as Error).message}`);
+        }
     }
 
     private async ensureCoreObjects(): Promise<void> {
-        await this.setObjectNotExistsAsync("info.voltage", {
+        await this.makeChannel("cells", "Per-cell voltages");
+        await this.makeChannel("temps", "Temperature sensors");
+        await this.makeChannel("balancer", "Cell balancer state");
+        await this.makeChannel("alarms", "Alarm flags");
+        await this.makeNumber("info.voltage", "Pack voltage", "V", "value.voltage");
+        await this.makeNumber("info.current", "Pack current", "A", "value.current");
+        await this.makeNumber("info.soc", "State of charge", "%", "value.battery");
+        await this.makeNumber("info.minCellVoltage", "Minimum cell voltage", "V", "value.voltage");
+        await this.makeNumber("info.maxCellVoltage", "Maximum cell voltage", "V", "value.voltage");
+        await this.makeNumber("info.cellDiff", "Cell voltage spread", "V", "value.voltage");
+        await this.makeNumber("info.minCellNumber", "Cell number with min voltage", "", "value");
+        await this.makeNumber("info.maxCellNumber", "Cell number with max voltage", "", "value");
+        await this.makeNumber("info.minTemperature", "Minimum temperature", "°C", "value.temperature");
+        await this.makeNumber("info.maxTemperature", "Maximum temperature", "°C", "value.temperature");
+        await this.makeNumber("info.minSensorNumber", "Sensor with min temperature", "", "value");
+        await this.makeNumber("info.maxSensorNumber", "Sensor with max temperature", "", "value");
+        await this.makeNumber("info.cycleCount", "Charge/discharge cycle count", "", "value");
+        await this.makeNumber("info.bmsLife", "BMS lifecycle counter", "", "value");
+        await this.makeNumber("info.residualCapacity", "Residual capacity", "Ah", "value");
+        await this.makeNumber("info.energyRemaining", "Remaining energy", "kWh", "value.power.consumption");
+        await this.makeBool("info.chargeMosOn", "Charge MOSFET on", "indicator");
+        await this.makeBool("info.dischargeMosOn", "Discharge MOSFET on", "indicator");
+        await this.makeBool("info.chargerConnected", "Charger connected", "indicator");
+        await this.makeBool("info.loadConnected", "Load connected", "indicator");
+        await this.setObjectNotExistsAsync("info.bmsState", {
             type: "state",
             common: {
-                type: "number",
-                role: "value.voltage",
-                name: "Pack voltage",
-                unit: "V",
+                type: "string",
+                role: "text",
+                name: "BMS pack state",
                 read: true,
                 write: false,
+                states: {
+                    stationary: "stationary",
+                    charging: "charging",
+                    discharging: "discharging",
+                    unknown: "unknown",
+                },
             },
-            native: {},
-        });
-        await this.setObjectNotExistsAsync("info.current", {
-            type: "state",
-            common: {
-                type: "number",
-                role: "value.current",
-                name: "Pack current",
-                unit: "A",
-                read: true,
-                write: false,
-            },
-            native: {},
-        });
-        await this.setObjectNotExistsAsync("info.soc", {
-            type: "state",
-            common: {
-                type: "number",
-                role: "value.battery",
-                name: "State of charge",
-                unit: "%",
-                read: true,
-                write: false,
-            },
-            native: {},
-        });
-        await this.setObjectNotExistsAsync("cells", {
-            type: "channel",
-            common: { name: "Per-cell voltages" },
-            native: {},
-        });
-        await this.setObjectNotExistsAsync("temps", {
-            type: "channel",
-            common: { name: "Temperature sensors" },
             native: {},
         });
     }
 
-    /**
-     * Make sure exactly `cellCount` cell states and `tempSensorCount` sensor
-     * states exist, deleting any leftovers from a previous BMS configuration
-     * with a different cell count.
-     */
+    private async ensureAlarmObjects(): Promise<void> {
+        for (const def of ALARM_FLAGS) {
+            await this.setObjectNotExistsAsync(`alarms.${def.key}`, {
+                type: "state",
+                common: {
+                    type: "boolean",
+                    role: "indicator.alarm",
+                    name: def.name,
+                    read: true,
+                    write: false,
+                },
+                native: {},
+            });
+        }
+    }
+
     private async syncDynamicObjects(bms: BmsConfig): Promise<void> {
         for (let i = 1; i <= bms.cellCount; i++) {
-            await this.setObjectNotExistsAsync(`cells.cell_${i}`, {
-                type: "state",
-                common: {
-                    type: "number",
-                    role: "value.voltage",
-                    name: `Cell ${i} voltage`,
-                    unit: "V",
-                    read: true,
-                    write: false,
-                },
-                native: {},
-            });
+            await this.makeNumber(`cells.cell_${i}`, `Cell ${i} voltage`, "V", "value.voltage");
+            await this.makeBool(`balancer.cell_${i}`, `Cell ${i} balancing`, "indicator");
         }
         for (let i = 1; i <= bms.tempSensorCount; i++) {
-            await this.setObjectNotExistsAsync(`temps.sensor_${i}`, {
-                type: "state",
-                common: {
-                    type: "number",
-                    role: "value.temperature",
-                    name: `Temperature sensor ${i}`,
-                    unit: "°C",
-                    read: true,
-                    write: false,
-                },
-                native: {},
-            });
+            await this.makeNumber(
+                `temps.sensor_${i}`,
+                `Temperature sensor ${i}`,
+                "°C",
+                "value.temperature",
+            );
         }
         await this.deleteStaleChannelMembers("cells", "cell_", bms.cellCount);
+        await this.deleteStaleChannelMembers("balancer", "cell_", bms.cellCount);
         await this.deleteStaleChannelMembers("temps", "sensor_", bms.tempSensorCount);
+    }
+
+    private async makeChannel(id: string, name: string): Promise<void> {
+        await this.setObjectNotExistsAsync(id, {
+            type: "channel",
+            common: { name },
+            native: {},
+        });
+    }
+
+    private async makeNumber(
+        id: string,
+        name: string,
+        unit: string,
+        role: string,
+    ): Promise<void> {
+        await this.setObjectNotExistsAsync(id, {
+            type: "state",
+            common: {
+                type: "number",
+                role,
+                name,
+                unit: unit || undefined,
+                read: true,
+                write: false,
+            },
+            native: {},
+        });
+    }
+
+    private async makeBool(id: string, name: string, role: string): Promise<void> {
+        await this.setObjectNotExistsAsync(id, {
+            type: "state",
+            common: { type: "boolean", role, name, read: true, write: false },
+            native: {},
+        });
     }
 
     private async deleteStaleChannelMembers(
