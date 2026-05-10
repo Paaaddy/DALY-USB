@@ -11,10 +11,18 @@ export interface TransportOptions {
     path: string;
     baudRate: number;
     requestTimeoutMs: number;
+    /** Maximum time to wait for the underlying port to open before giving up. */
+    openTimeoutMs?: number;
     log: TransportLogger;
 }
 
 type Frame = Buffer;
+
+export class TransportClosedError extends Error {
+    constructor() {
+        super("transport closed");
+    }
+}
 
 export class DalyTransport {
     private port?: SerialPort;
@@ -22,6 +30,7 @@ export class DalyTransport {
     private queue: Promise<unknown> = Promise.resolve();
     private incoming: Frame[] = [];
     private waiter?: { resolve: (f: Frame) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+    private closed = false;
 
     constructor(private readonly opts: TransportOptions) {}
 
@@ -34,15 +43,25 @@ export class DalyTransport {
         this.parser = this.port.pipe(new ByteLengthParser({ length: FRAME_LENGTH }));
         this.parser.on("data", (data: Buffer) => this.onFrame(data));
         this.port.on("error", (err: Error) => this.opts.log.error(`serial error: ${err.message}`));
+
+        const openMs = this.opts.openTimeoutMs ?? Math.max(this.opts.requestTimeoutMs, 5000);
         await new Promise<void>((resolve, reject) => {
-            this.port!.open(err => (err ? reject(err) : resolve()));
+            const timer = setTimeout(() => {
+                reject(new Error(`failed to open ${this.opts.path} within ${openMs}ms`));
+            }, openMs);
+            this.port!.open(err => {
+                clearTimeout(timer);
+                if (err) reject(err);
+                else resolve();
+            });
         });
     }
 
     async close(): Promise<void> {
+        this.closed = true;
         if (this.waiter) {
             clearTimeout(this.waiter.timer);
-            this.waiter.reject(new Error("transport closing"));
+            this.waiter.reject(new TransportClosedError());
             this.waiter = undefined;
         }
         if (!this.port) return;
@@ -59,7 +78,9 @@ export class DalyTransport {
      * so concurrent callers never interleave on the bus.
      */
     request(buf: Buffer, expectedFrames: number, expectedCommand: number): Promise<ParsedFrame[]> {
+        if (this.closed) return Promise.reject(new TransportClosedError());
         const exec = async (): Promise<ParsedFrame[]> => {
+            if (this.closed) throw new TransportClosedError();
             if (!this.port?.isOpen) throw new Error("serial port not open");
             this.incoming = [];
 

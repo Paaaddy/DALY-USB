@@ -39,11 +39,12 @@
     "adminUI": { "config": "json" }
   },
   "native": {
-    "serialPort": "/dev/ttyUSB0",
+    "serialPort": "",
     "baudRate": 9600,
     "hostAddress": 64,
     "pollIntervalMs": 5000,
-    "requestTimeoutMs": 1000
+    "requestTimeoutMs": 1000,
+    "allowMosfetWrites": false
   },
   "objects": [],
   "instanceObjects": [

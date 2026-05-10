@@ -1,53 +1,63 @@
 {
-  "type": "panel",
-  "items": {
-    "serialPort": {
-      "type": "text",
-      "label": "Serial port",
-      "newLine": true,
-      "sm": 12,
-      "md": 6,
-      "default": "/dev/ttyUSB0",
-      "help": "Path to the USB-UART device, e.g. /dev/ttyUSB0 or a stable /dev/serial/by-id/... path"
-    },
-    "baudRate": {
-      "type": "number",
-      "label": "Baud rate",
-      "sm": 12,
-      "md": 6,
-      "default": 9600,
-      "min": 300,
-      "max": 921600
-    },
-    "hostAddress": {
-      "type": "number",
-      "label": "Host address (decimal)",
-      "newLine": true,
-      "sm": 12,
-      "md": 6,
-      "default": 64,
-      "min": 0,
-      "max": 255,
-      "help": "DALY upper-computer host byte. 64 (0x40) is the default; some BMS firmwares accept 128 (0x80)."
-    },
-    "pollIntervalMs": {
-      "type": "number",
-      "label": "Poll interval (ms)",
-      "sm": 12,
-      "md": 6,
-      "default": 5000,
-      "min": 500,
-      "max": 600000
-    },
-    "requestTimeoutMs": {
-      "type": "number",
-      "label": "Request timeout (ms)",
-      "newLine": true,
-      "sm": 12,
-      "md": 6,
-      "default": 1000,
-      "min": 100,
-      "max": 10000
+    "type": "panel",
+    "items": {
+        "serialPort": {
+            "type": "text",
+            "label": "Serial port",
+            "newLine": true,
+            "sm": 12,
+            "md": 6,
+            "default": "",
+            "help": "Path to the USB-UART device. Use a stable /dev/serial/by-id/... path to avoid surprises when other USB serial devices are present.",
+            "validator": "data.serialPort && data.serialPort.length > 0",
+            "validatorErrorText": "A serial port path is required."
+        },
+        "baudRate": {
+            "type": "number",
+            "label": "Baud rate",
+            "sm": 12,
+            "md": 6,
+            "default": 9600,
+            "min": 300,
+            "max": 921600
+        },
+        "hostAddress": {
+            "type": "number",
+            "label": "Host address (decimal)",
+            "newLine": true,
+            "sm": 12,
+            "md": 6,
+            "default": 64,
+            "min": 0,
+            "max": 255,
+            "help": "DALY upper-computer host byte. 64 (0x40) is the default; some BMS firmwares accept 128 (0x80)."
+        },
+        "pollIntervalMs": {
+            "type": "number",
+            "label": "Poll interval (ms)",
+            "sm": 12,
+            "md": 6,
+            "default": 5000,
+            "min": 500,
+            "max": 600000
+        },
+        "requestTimeoutMs": {
+            "type": "number",
+            "label": "Request timeout (ms)",
+            "newLine": true,
+            "sm": 12,
+            "md": 6,
+            "default": 1000,
+            "min": 100,
+            "max": 10000
+        },
+        "allowMosfetWrites": {
+            "type": "checkbox",
+            "label": "Enable charge/discharge MOSFET writes (DANGEROUS)",
+            "newLine": true,
+            "sm": 12,
+            "default": false,
+            "help": "When enabled, writes to control.chargeMosfet and control.dischargeMosfet are sent to the BMS. Disabling a MOSFET disconnects the battery from the load or charger; only enable this if you understand the consequences for your installation."
+        }
     }
-  }
 }

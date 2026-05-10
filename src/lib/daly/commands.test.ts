@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import {
     ALARM_FLAGS,
+    Bounds,
     buildMosfetPayload,
     combineCellVoltageFrames,
     combineTemperatureFrames,
@@ -100,10 +101,23 @@ describe("cell voltage frames", () => {
         ]);
     });
 
-    it("ignores out-of-range frame indices", () => {
+    it("rejects an out-of-range frame index", () => {
         const fr = parseCellVoltageFrame(buf(99, 1, 1, 1, 1, 1, 1, 0));
-        const out = combineCellVoltageFrames([fr], 8);
-        expect(out).to.deep.equal([0, 0, 0, 0, 0, 0, 0, 0]);
+        // cellCount=3 -> expected=1 frame, so a frameIndex of 99 is out of range
+        expect(() => combineCellVoltageFrames([fr], 3)).to.throw(/out of range/);
+    });
+
+    it("rejects a duplicated frame index", () => {
+        const a = parseCellVoltageFrame(buf(1, 0x0c, 0xe4, 0x0c, 0xe5, 0x0c, 0xe6, 0));
+        const b = parseCellVoltageFrame(buf(1, 0x0c, 0xe7, 0x0c, 0xe8, 0x0c, 0xe9, 0));
+        const c = parseCellVoltageFrame(buf(3, 0x0c, 0xea, 0x0c, 0xeb, 0x00, 0x00, 0));
+        expect(() => combineCellVoltageFrames([a, b, c], 8)).to.throw(/duplicate frame index/);
+    });
+
+    it("rejects a missing frame (only 2 of 3 received)", () => {
+        const a = parseCellVoltageFrame(buf(1, 0x0c, 0xe4, 0x0c, 0xe5, 0x0c, 0xe6, 0));
+        const c = parseCellVoltageFrame(buf(3, 0x0c, 0xea, 0x0c, 0xeb, 0x00, 0x00, 0));
+        expect(() => combineCellVoltageFrames([a, c], 8)).to.throw(/expected 3 frame/);
     });
 });
 
@@ -117,6 +131,17 @@ describe("temperature frames", () => {
         const fr = parseTemperatureFrame(buf(1, 60, 61, 62, 63, 0, 0, 0));
         const out = combineTemperatureFrames([fr], 4);
         expect(out).to.deep.equal([20, 21, 22, 23]);
+    });
+
+    it("rejects a duplicated temperature frame index", () => {
+        const a = parseTemperatureFrame(buf(1, 60, 60, 60, 60, 60, 60, 60));
+        const b = parseTemperatureFrame(buf(1, 60, 60, 60, 60, 60, 60, 60));
+        expect(() => combineTemperatureFrames([a, b], 8)).to.throw(/duplicate frame index/);
+    });
+
+    it("rejects an out-of-range temperature frame index", () => {
+        const fr = parseTemperatureFrame(buf(99, 60, 60, 60, 60, 60, 60, 60));
+        expect(() => combineTemperatureFrames([fr], 4)).to.throw(/out of range/);
     });
 });
 
@@ -149,5 +174,39 @@ describe("buildMosfetPayload", () => {
     it("emits a zero-padded 8-byte payload", () => {
         expect(Array.from(buildMosfetPayload(true))).to.deep.equal([1, 0, 0, 0, 0, 0, 0, 0]);
         expect(Array.from(buildMosfetPayload(false))).to.deep.equal([0, 0, 0, 0, 0, 0, 0, 0]);
+    });
+});
+
+describe("Bounds", () => {
+    it("packVoltage rejects 0 V and 200 V, accepts 50 V", () => {
+        expect(Bounds.packVoltage(0)).to.equal(false);
+        expect(Bounds.packVoltage(200)).to.equal(false);
+        expect(Bounds.packVoltage(50)).to.equal(true);
+    });
+
+    it("soc rejects -1 % and 200 %, accepts 0..110", () => {
+        expect(Bounds.soc(-1)).to.equal(false);
+        expect(Bounds.soc(200)).to.equal(false);
+        expect(Bounds.soc(0)).to.equal(true);
+        expect(Bounds.soc(110)).to.equal(true);
+    });
+
+    it("packCurrent accepts the +/-500 A range and rejects beyond", () => {
+        expect(Bounds.packCurrent(-501)).to.equal(false);
+        expect(Bounds.packCurrent(501)).to.equal(false);
+        expect(Bounds.packCurrent(-300)).to.equal(true);
+        expect(Bounds.packCurrent(300)).to.equal(true);
+    });
+
+    it("cellVoltage rejects a phantom 0 V from a missing frame", () => {
+        expect(Bounds.cellVoltage(0)).to.equal(false);
+        expect(Bounds.cellVoltage(3.3)).to.equal(true);
+        expect(Bounds.cellVoltage(5)).to.equal(false);
+    });
+
+    it("temperature rejects values below the -40 floor and above 100 °C", () => {
+        expect(Bounds.temperature(-41)).to.equal(false);
+        expect(Bounds.temperature(101)).to.equal(false);
+        expect(Bounds.temperature(25)).to.equal(true);
     });
 });
