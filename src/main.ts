@@ -115,23 +115,39 @@ class DalyUsbAdapter extends utils.Adapter {
     }
 
     private async discover(): Promise<BmsConfig> {
-        const status = await this.runCommand(CommandId.StatusInfo, 1, parseStatusInfo);
-        if (status.cellCount === 0 || status.tempSensorCount === 0) {
-            throw new Error(
-                `BMS reported impossible config (cells=${status.cellCount}, temps=${status.tempSensorCount})`,
-            );
+        const RETRIES = 3;
+        const RETRY_DELAY_MS = 1000;
+        let lastErr: Error | undefined;
+        for (let attempt = 1; attempt <= RETRIES; attempt++) {
+            try {
+                const status = await this.runCommand(CommandId.StatusInfo, 1, parseStatusInfo);
+                if (status.cellCount === 0 || status.tempSensorCount === 0) {
+                    throw new Error(
+                        `BMS reported impossible config (cells=${status.cellCount}, temps=${status.tempSensorCount})`,
+                    );
+                }
+                if (status.cellCount > MAX_CELLS) {
+                    throw new Error(
+                        `BMS reported ${status.cellCount} cells, exceeds protocol max of ${MAX_CELLS} — refusing to trust`,
+                    );
+                }
+                if (status.tempSensorCount > MAX_TEMP_SENSORS) {
+                    throw new Error(
+                        `BMS reported ${status.tempSensorCount} temp sensors, exceeds protocol max of ${MAX_TEMP_SENSORS} — refusing to trust`,
+                    );
+                }
+                return { cellCount: status.cellCount, tempSensorCount: status.tempSensorCount };
+            } catch (err) {
+                lastErr = err as Error;
+                if (attempt < RETRIES) {
+                    this.log.warn(
+                        `discovery attempt ${attempt} failed (${lastErr.message}), retrying in ${RETRY_DELAY_MS}ms…`,
+                    );
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                }
+            }
         }
-        if (status.cellCount > MAX_CELLS) {
-            throw new Error(
-                `BMS reported ${status.cellCount} cells, exceeds protocol max of ${MAX_CELLS} — refusing to trust`,
-            );
-        }
-        if (status.tempSensorCount > MAX_TEMP_SENSORS) {
-            throw new Error(
-                `BMS reported ${status.tempSensorCount} temp sensors, exceeds protocol max of ${MAX_TEMP_SENSORS} — refusing to trust`,
-            );
-        }
-        return { cellCount: status.cellCount, tempSensorCount: status.tempSensorCount };
+        throw lastErr!;
     }
 
     private async poll(): Promise<void> {
@@ -232,18 +248,16 @@ class DalyUsbAdapter extends utils.Adapter {
         if (this.lastBmsLife !== undefined) {
             if (m.bmsLife === this.lastBmsLife) {
                 this.bmsLifeStuckCount++;
-                if (this.bmsLifeStuckCount >= HEARTBEAT_STUCK_LIMIT && !this.connectionDown) {
-                    this.connectionDown = true;
-                    await this.setState("info.connection", false, true);
-                    this.log.warn(
-                        `BMS heartbeat (bmsLife) unchanged for ${this.bmsLifeStuckCount} reads — flagging info.connection=false`,
-                    );
-                }
             } else {
                 this.bmsLifeStuckCount = 0;
             }
         }
         this.lastBmsLife = m.bmsLife;
+        if (this.bmsLifeStuckCount >= HEARTBEAT_STUCK_LIMIT) {
+            throw new Error(
+                `BMS heartbeat (bmsLife) unchanged for ${this.bmsLifeStuckCount} reads — BMS may be locked up`,
+            );
+        }
 
         await this.setStateChangedAsync("info.bmsState", m.state, true);
         await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
@@ -310,7 +324,7 @@ class DalyUsbAdapter extends utils.Adapter {
     }
 
     private async tickBalancer(cellCount: number): Promise<void> {
-        if (!this.transport) return;
+        if (!this.transport) throw new Error("transport not initialised");
         const req = this.readRequest(CommandId.BalancerState);
         const [frame] = await this.transport.request(req, 1, CommandId.BalancerState);
         const flags = parseBalancerState(frame.payload, cellCount);
@@ -479,9 +493,10 @@ class DalyUsbAdapter extends utils.Adapter {
                 "value.temperature",
             );
         }
-        await this.deleteStaleChannelMembers("cells", "cell_", bms.cellCount);
-        await this.deleteStaleChannelMembers("balancer", "cell_", bms.cellCount);
-        await this.deleteStaleChannelMembers("temps", "sensor_", bms.tempSensorCount);
+        const view = await this.getAdapterObjectsAsync();
+        await this.pruneChannel(view, "cells", "cell_", bms.cellCount);
+        await this.pruneChannel(view, "balancer", "cell_", bms.cellCount);
+        await this.pruneChannel(view, "temps", "sensor_", bms.tempSensorCount);
     }
 
     private async makeChannel(id: string, name: string): Promise<void> {
@@ -536,12 +551,12 @@ class DalyUsbAdapter extends utils.Adapter {
         });
     }
 
-    private async deleteStaleChannelMembers(
+    private async pruneChannel(
+        view: Record<string, ioBroker.Object>,
         channel: string,
         prefix: string,
         keep: number,
     ): Promise<void> {
-        const view = await this.getAdapterObjectsAsync();
         const fullPrefix = `${this.namespace}.${channel}.${prefix}`;
         for (const id of Object.keys(view)) {
             if (!id.startsWith(fullPrefix)) continue;

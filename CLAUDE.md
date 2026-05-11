@@ -71,6 +71,6 @@ Useful when extending `commands.ts` or debugging transport issues.
 - Don't unit-test `main.ts` directly — use `tests.integration` from `@iobroker/testing` (`test/integration/test.js`) which spins up an actual js-controller. Slow; run on demand, not in pre-commit.
 - Package shape (io-package.json keys, valid JSON, license, etc.) is covered by `test/package/test.js` and runs in CI.
 
-## Branching
+## Git install note
 
-Active development branch: `claude/add-claude-documentation-Up42b`. Do not push to `main` without explicit instruction.
+`prepare` (not `prepublishOnly`) runs when ioBroker installs the adapter via `iobroker url github.com/...`. Both scripts must call `npm run build` so TypeScript compiles on both git installs and npm publishes. Do not remove `prepare`.

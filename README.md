@@ -110,6 +110,12 @@ Things that are deliberately deferred. PRs welcome.
   let us test the full poll path without hardware.
 - **CAN-bus DALY support.** Out of scope for `iobroker.daly-usb` (which is
   UART-only) but worth a sibling adapter someday.
+- **`Bounds.packVoltage` upper cap is 100 V.** This conflicts with large packs
+  (e.g. 48-cell ≈ 192 V). Raise the limit to ~500 V once confirmed against real
+  hardware — the current cap will reject valid readings from high-voltage packs.
+- **`DalyTransport.request()` has no unit test.** The transport needs a
+  SerialPort mock or real-port fixture so request serialisation, timeout, and
+  the error-handler rejection path can be exercised without hardware.
 
 ## Development
 

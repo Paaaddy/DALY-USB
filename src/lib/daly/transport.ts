@@ -42,7 +42,15 @@ export class DalyTransport {
         });
         this.parser = this.port.pipe(new ByteLengthParser({ length: FRAME_LENGTH }));
         this.parser.on("data", (data: Buffer) => this.onFrame(data));
-        this.port.on("error", (err: Error) => this.opts.log.error(`serial error: ${err.message}`));
+        this.port.on("error", (err: Error) => {
+            this.opts.log.error(`serial error: ${err.message}`);
+            if (this.waiter) {
+                const w = this.waiter;
+                this.waiter = undefined;
+                clearTimeout(w.timer);
+                w.reject(err);
+            }
+        });
 
         const openMs = this.opts.openTimeoutMs ?? Math.max(this.opts.requestTimeoutMs, 5000);
         await new Promise<void>((resolve, reject) => {
