@@ -24,10 +24,13 @@ export class TransportClosedError extends Error {
     }
 }
 
+const MAX_QUEUE_DEPTH = 20;
+
 export class DalyTransport {
     private port?: SerialPort;
     private parser?: ByteLengthParser;
     private queue: Promise<unknown> = Promise.resolve();
+    private queueDepth = 0;
     private incoming: Frame[] = [];
     private waiter?: { resolve: (f: Frame) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
     private closed = false;
@@ -87,6 +90,14 @@ export class DalyTransport {
      */
     request(buf: Buffer, expectedFrames: number, expectedCommand: number): Promise<ParsedFrame[]> {
         if (this.closed) return Promise.reject(new TransportClosedError());
+        if (this.queueDepth >= MAX_QUEUE_DEPTH) {
+            return Promise.reject(
+                new Error(
+                    `request queue full (depth=${this.queueDepth}): BMS may be unresponsive`,
+                ),
+            );
+        }
+        this.queueDepth++;
         const exec = async (): Promise<ParsedFrame[]> => {
             if (this.closed) throw new TransportClosedError();
             if (!this.port?.isOpen) throw new Error("serial port not open");
@@ -106,7 +117,14 @@ export class DalyTransport {
             }
             return frames;
         };
-        const next = this.queue.then(exec, exec);
+        const wrapped = async (): Promise<ParsedFrame[]> => {
+            try {
+                return await exec();
+            } finally {
+                this.queueDepth--;
+            }
+        };
+        const next = this.queue.then(wrapped, wrapped);
         this.queue = next.catch(() => undefined);
         return next;
     }

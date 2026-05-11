@@ -43,18 +43,20 @@ interface BmsConfig {
 
 const CONNECTION_DOWN_AFTER_FAILED_TICKS = 3;
 const HEARTBEAT_STUCK_LIMIT = 5;
+const MOSFET_WRITE_DEBOUNCE_MS = 2000;
 
 class DalyUsbAdapter extends utils.Adapter {
     private transport?: DalyTransport;
     private poller?: Poller;
     private bms?: BmsConfig;
-    private lastVoltage = 0;
+    private lastVoltage = NaN;
     private readonly readRequestCache = new Map<number, Buffer>();
     private readonly failureSignatures = new Map<string, string>();
     private consecutiveTickFailures = 0;
     private connectionDown = true;
     private lastBmsLife?: number;
     private bmsLifeStuckCount = 0;
+    private lastMosfetWriteAt = 0;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({ ...options, name: "daly-usb" });
@@ -75,10 +77,43 @@ class DalyUsbAdapter extends utils.Adapter {
             return;
         }
 
+        const serialPort = this.config.serialPort.trim();
+        if (!/^(\/dev\/tty|\/dev\/serial\/)/.test(serialPort) || serialPort.includes("..")) {
+            this.log.error(
+                `invalid serialPort "${serialPort}": must be under /dev/tty* or /dev/serial/by-id/`,
+            );
+            return;
+        }
+
+        const baudRate = Number(this.config.baudRate);
+        const pollIntervalMs = Number(this.config.pollIntervalMs);
+        const requestTimeoutMs = Number(this.config.requestTimeoutMs);
+        if (!baudRate || baudRate < 300 || baudRate > 115200) {
+            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 115200`);
+            return;
+        }
+        if (!pollIntervalMs || pollIntervalMs < 500) {
+            this.log.error(`invalid pollIntervalMs ${pollIntervalMs}: must be >= 500`);
+            return;
+        }
+        if (!requestTimeoutMs || requestTimeoutMs < 100) {
+            this.log.error(`invalid requestTimeoutMs ${requestTimeoutMs}: must be >= 100`);
+            return;
+        }
+
+        if (this.config.allowMosfetWrites) {
+            this.log.error(
+                "*** MOSFET WRITES ENABLED *** The adapter can now disconnect the battery " +
+                    "from the load or charger. Automations that write control.chargeMosfet / " +
+                    "control.dischargeMosfet will send real commands to hardware. " +
+                    "If this was unintended, disable allowMosfetWrites and restart.",
+            );
+        }
+
         this.transport = new DalyTransport({
-            path: this.config.serialPort,
-            baudRate: this.config.baudRate,
-            requestTimeoutMs: this.config.requestTimeoutMs,
+            path: serialPort,
+            baudRate,
+            requestTimeoutMs,
             log: this.log,
         });
 
@@ -103,14 +138,13 @@ class DalyUsbAdapter extends utils.Adapter {
 
         if (this.config.allowMosfetWrites) {
             this.subscribeStates("control.*");
-            this.log.info("MOSFET writes enabled (control.* subscribed)");
         } else {
             this.log.info(
                 "MOSFET writes disabled by config; control.* states are read-only until allowMosfetWrites is enabled",
             );
         }
 
-        this.poller = new Poller(this.config.pollIntervalMs, () => this.poll(), this.log);
+        this.poller = new Poller(pollIntervalMs, () => this.poll(), this.log);
         this.poller.start();
     }
 
@@ -176,6 +210,8 @@ class DalyUsbAdapter extends utils.Adapter {
             ) {
                 this.connectionDown = true;
                 await this.setState("info.connection", false, true);
+                await this.setState("info.chargeMosOn", null, true);
+                await this.setState("info.dischargeMosOn", null, true);
                 this.log.warn(
                     `${this.consecutiveTickFailures} consecutive ticks with failures — flagging info.connection=false`,
                 );
@@ -268,12 +304,14 @@ class DalyUsbAdapter extends utils.Adapter {
             Number(m.residualCapacityAh.toFixed(3)),
             true,
         );
-        const energyKwh = (m.residualCapacityAh * this.lastVoltage) / 1000;
-        await this.setStateChangedAsync(
-            "info.energyRemaining",
-            Number(energyKwh.toFixed(3)),
-            true,
-        );
+        if (!isNaN(this.lastVoltage)) {
+            const energyKwh = (m.residualCapacityAh * this.lastVoltage) / 1000;
+            await this.setStateChangedAsync(
+                "info.energyRemaining",
+                Number(energyKwh.toFixed(3)),
+                true,
+            );
+        }
     }
 
     private async tickStatusInfo(): Promise<void> {
@@ -441,6 +479,7 @@ class DalyUsbAdapter extends utils.Adapter {
         );
         await this.makeBool("info.chargeMosOn", "Charge MOSFET on", "indicator");
         await this.makeBool("info.dischargeMosOn", "Discharge MOSFET on", "indicator");
+        await this.makeBool("info.mosfetWriteFailed", "Last MOSFET write rejected by BMS", "indicator.alarm");
         await this.makeBool("info.chargerConnected", "Charger connected", "indicator");
         await this.makeBool("info.loadConnected", "Load connected", "indicator");
         await this.makeText("info.lastAlarmUpdate", "Timestamp of last successful alarm read");
@@ -477,6 +516,7 @@ class DalyUsbAdapter extends utils.Adapter {
                 },
                 native: {},
             });
+            await this.setStateChangedAsync(`alarms.${def.key}`, false, true);
         }
     }
 
@@ -623,7 +663,10 @@ class DalyUsbAdapter extends utils.Adapter {
      * the writable control state with the value the BMS actually settled on
      * (not the value the user requested) so automations can't be fooled by a
      * silently-rejected write. If the readback disagrees with the request,
-     * leave the control state pending (ack=false) and warn.
+     * leave the control state pending (ack=false), warn, and set
+     * info.mosfetWriteFailed=true so automations can detect the rejection.
+     *
+     * Gated: refuses when connection is down or within the debounce window.
      */
     private async handleMosfetWrite(
         command: number,
@@ -632,6 +675,21 @@ class DalyUsbAdapter extends utils.Adapter {
         readbackId: string,
     ): Promise<void> {
         if (!this.transport) return;
+        if (this.connectionDown) {
+            this.log.warn(
+                `ignored write to ${controlId}: connection is down — refusing to send hardware command`,
+            );
+            return;
+        }
+        const now = Date.now();
+        if (now - this.lastMosfetWriteAt < MOSFET_WRITE_DEBOUNCE_MS) {
+            this.log.warn(
+                `ignored write to ${controlId}: debounce active (${MOSFET_WRITE_DEBOUNCE_MS}ms between writes)`,
+            );
+            return;
+        }
+        this.lastMosfetWriteAt = now;
+
         try {
             const req = buildRequest(this.config.hostAddress, command, buildMosfetPayload(on));
             await this.transport.request(req, 1, command);
@@ -645,6 +703,7 @@ class DalyUsbAdapter extends utils.Adapter {
             await this.tickMosfetStatus();
         } catch (err) {
             this.log.warn(`readback after ${controlId} write failed: ${(err as Error).message}`);
+            await this.setStateChangedAsync("info.mosfetWriteFailed", true, true);
             return;
         }
 
@@ -652,15 +711,18 @@ class DalyUsbAdapter extends utils.Adapter {
         const actual = readback?.val;
         if (typeof actual !== "boolean") {
             this.log.warn(`readback for ${controlId} produced no boolean value`);
+            await this.setStateChangedAsync("info.mosfetWriteFailed", true, true);
             return;
         }
         if (actual !== on) {
             this.log.warn(
-                `${controlId} write disagrees with readback (requested=${on}, actual=${actual}); leaving control state pending`,
+                `${controlId} write disagrees with readback (requested=${on}, actual=${actual}); BMS rejected the command`,
             );
+            await this.setStateChangedAsync("info.mosfetWriteFailed", true, true);
             return;
         }
         await this.setState(controlId, actual, true);
+        await this.setStateChangedAsync("info.mosfetWriteFailed", false, true);
     }
 }
 

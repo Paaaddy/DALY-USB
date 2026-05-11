@@ -178,10 +178,11 @@ describe("buildMosfetPayload", () => {
 });
 
 describe("Bounds", () => {
-    it("packVoltage rejects 0 V and 200 V, accepts 50 V", () => {
+    it("packVoltage rejects 0 V and 600 V, accepts 50 V and 200 V (HV pack)", () => {
         expect(Bounds.packVoltage(0)).to.equal(false);
-        expect(Bounds.packVoltage(200)).to.equal(false);
+        expect(Bounds.packVoltage(600)).to.equal(false);
         expect(Bounds.packVoltage(50)).to.equal(true);
+        expect(Bounds.packVoltage(200)).to.equal(true);
     });
 
     it("soc rejects -1 % and 200 %, accepts 0..110", () => {

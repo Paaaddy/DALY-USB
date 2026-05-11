@@ -236,7 +236,7 @@ function assertFrameIndexSet(received: readonly number[], expected: number, labe
  * downstream automations from operating on phantom data.
  */
 export const Bounds = {
-    packVoltage: (v: number): boolean => v >= 5 && v <= 100,
+    packVoltage: (v: number): boolean => v >= 5 && v <= 500,
     packCurrent: (a: number): boolean => a >= -500 && a <= 500,
     soc: (s: number): boolean => s >= 0 && s <= 110,
     cellVoltage: (v: number): boolean => v >= 0.5 && v <= 4.5,
