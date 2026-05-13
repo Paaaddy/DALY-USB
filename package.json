@@ -6,7 +6,7 @@
     "name": "Paaaddy",
     "email": "noreply@example.com"
   },
-  "homepage": "https://github.com/Paaaddy/DALY-USB",
+  "homepage": "https://github.com/LeoTronick/DALY-USB",
   "license": "MIT",
   "keywords": [
     "ioBroker",
@@ -18,7 +18,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Paaaddy/DALY-USB.git"
+    "url": "https://github.com/LeoTronick/DALY-USB.git"
   },
   "engines": {
     "node": ">=18"
