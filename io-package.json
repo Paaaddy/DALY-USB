@@ -3,6 +3,14 @@
     "name": "daly-usb",
     "version": "0.2.0",
     "news": {
+      "0.2.0": {
+        "en": "hardware safety hardening, pack voltage ceiling from cell count",
+        "de": "Hardware-Sicherheitshärtung, Packspannungsgrenze aus Zellanzahl"
+      },
+      "0.1.0": {
+        "en": "initial release with full DALY UART protocol coverage",
+        "de": "Erstveröffentlichung mit vollständiger DALY-UART-Protokollabdeckung"
+      },
       "0.0.1": {
         "en": "initial release",
         "de": "Erstveröffentlichung"
@@ -32,8 +40,8 @@
     "main": "build/main.js",
     "icon": "daly-usb.png",
     "enabled": true,
-    "extIcon": "https://raw.githubusercontent.com/Paaaddy/DALY-USB/main/admin/daly-usb.png",
-    "readme": "https://github.com/Paaaddy/DALY-USB/blob/main/README.md",
+    "extIcon": "https://raw.githubusercontent.com/LeoTronick/DALY-USB/main/admin/daly-usb.png",
+    "readme": "https://github.com/LeoTronick/DALY-USB/blob/main/README.md",
     "loglevel": "info",
     "mode": "daemon",
     "type": "energy",
