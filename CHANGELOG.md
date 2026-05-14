@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/LeoTronick/DALY-USB/compare/v0.2.1...v0.2.2) (2026-05-14)
+
+
+### Bug Fixes
+
+* remove prepare script so git installs use committed build output ([8acc148](https://github.com/LeoTronick/DALY-USB/commit/8acc1489a351d395af3a969aade44ab7995641c3))
+* remove prepare script so git installs use committed build output ([48ce5b0](https://github.com/LeoTronick/DALY-USB/commit/48ce5b077f15cb3e4bb65be9d4015e7fd8855bee))
+
 ## [0.2.1](https://github.com/LeoTronick/DALY-USB/compare/v0.2.0...v0.2.1) (2026-05-14)
 
 
