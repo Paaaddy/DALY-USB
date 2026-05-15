@@ -147,6 +147,7 @@ class DalyUsbAdapter extends utils.Adapter {
 
         this.poller = new Poller(pollIntervalMs, () => this.poll(), this.log);
         this.poller.start();
+        await this.setStateChangedAsync("info.mosfetWriteFailed", false, true);
     }
 
     private async discover(): Promise<BmsConfig> {
@@ -210,9 +211,11 @@ class DalyUsbAdapter extends utils.Adapter {
                 !this.connectionDown
             ) {
                 this.connectionDown = true;
+                this.lastVoltage = NaN;
                 await this.setState("info.connection", false, true);
                 await this.setState("info.chargeMosOn", null, true);
                 await this.setState("info.dischargeMosOn", null, true);
+                await this.clearStaleStates();
                 this.log.warn(
                     `${this.consecutiveTickFailures} consecutive ticks with failures — flagging info.connection=false`,
                 );
@@ -447,6 +450,39 @@ class DalyUsbAdapter extends utils.Adapter {
                 this.log.warn(`${label} failed: ${msg}`);
             }
             return false;
+        }
+    }
+
+    /**
+     * Null out all real-time telemetry states when the BMS goes offline.
+     * Automations must not act on stale data — explicit null values signal
+     * "unknown" so any automation that reads without first checking
+     * info.connection will see null rather than a plausible-but-stale value.
+     * Alarm flags are intentionally preserved: a stale alarm is safer to
+     * keep visible than to silently clear it while the BMS is unreachable.
+     */
+    private async clearStaleStates(): Promise<void> {
+        const ids: string[] = [
+            "info.voltage", "info.current", "info.soc",
+            "info.bmsState", "info.chargerConnected", "info.loadConnected",
+            "info.minCellVoltage", "info.maxCellVoltage", "info.cellDiff",
+            "info.minCellNumber", "info.maxCellNumber",
+            "info.minTemperature", "info.maxTemperature",
+            "info.minSensorNumber", "info.maxSensorNumber",
+            "info.residualCapacity", "info.energyRemaining",
+            "info.bmsLife",
+        ];
+        for (const id of ids) {
+            await this.setState(id, null, true);
+        }
+        if (this.bms) {
+            for (let i = 1; i <= this.bms.cellCount; i++) {
+                await this.setState(`cells.cell_${i}`, null, true);
+                await this.setState(`balancer.cell_${i}`, null, true);
+            }
+            for (let i = 1; i <= this.bms.tempSensorCount; i++) {
+                await this.setState(`temps.sensor_${i}`, null, true);
+            }
         }
     }
 
