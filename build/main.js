@@ -53,6 +53,7 @@ class DalyUsbAdapter extends utils.Adapter {
     lastBmsLife;
     bmsLifeStuckCount = 0;
     lastMosfetWriteAt = 0;
+    mosfetWriteInFlight = false;
     constructor(options = {}) {
         super({ ...options, name: "daly-usb" });
         this.on("ready", this.onReady.bind(this));
@@ -75,8 +76,8 @@ class DalyUsbAdapter extends utils.Adapter {
         const baudRate = Number(this.config.baudRate);
         const pollIntervalMs = Number(this.config.pollIntervalMs);
         const requestTimeoutMs = Number(this.config.requestTimeoutMs);
-        if (!baudRate || baudRate < 300 || baudRate > 115200) {
-            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 115200`);
+        if (!baudRate || baudRate < 300 || baudRate > 921600) {
+            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 921600`);
             return;
         }
         if (!pollIntervalMs || pollIntervalMs < 500) {
@@ -165,7 +166,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await wrap("0x90", () => this.tickPackMeasurements());
         await wrap("0x91", () => this.tickMinMaxCellVoltage());
         await wrap("0x92", () => this.tickMinMaxTemperature());
-        await wrap("0x93", () => this.tickMosfetStatus());
+        await wrap("0x93", () => this.tickMosfetStatus(!this.mosfetWriteInFlight));
         await wrap("0x94", () => this.tickStatusInfo());
         await wrap("0x95", () => this.tickCellVoltages(this.bms.cellCount));
         await wrap("0x96", () => this.tickTemperatures(this.bms.tempSensorCount));
@@ -234,7 +235,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await this.setStateChangedAsync("info.minSensorNumber", m.minSensorNumber, true);
         await this.setStateChangedAsync("info.maxSensorNumber", m.maxSensorNumber, true);
     }
-    async tickMosfetStatus() {
+    async tickMosfetStatus(publishMosState = true) {
         const m = await this.runCommand(commands_1.CommandId.MosfetStatus, 1, commands_1.parseMosfetStatus);
         if (this.lastBmsLife !== undefined) {
             if (m.bmsLife === this.lastBmsLife) {
@@ -249,8 +250,10 @@ class DalyUsbAdapter extends utils.Adapter {
             throw new Error(`BMS heartbeat (bmsLife) unchanged for ${this.bmsLifeStuckCount} reads — BMS may be locked up`);
         }
         await this.setStateChangedAsync("info.bmsState", m.state, true);
-        await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
-        await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        if (publishMosState) {
+            await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
+            await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        }
         await this.setStateChangedAsync("info.bmsLife", m.bmsLife, true);
         await this.setStateChangedAsync("info.residualCapacity", Number(m.residualCapacityAh.toFixed(3)), true);
         if (!isNaN(this.lastVoltage)) {
@@ -418,7 +421,6 @@ class DalyUsbAdapter extends utils.Adapter {
                 },
                 native: {},
             });
-            await this.setStateChangedAsync(`alarms.${def.key}`, false, true);
         }
     }
     async syncDynamicObjects(bms) {
@@ -525,10 +527,10 @@ class DalyUsbAdapter extends utils.Adapter {
         }
         const local = id.slice(this.namespace.length + 1);
         if (local === "control.chargeMosfet") {
-            void this.handleMosfetWrite(commands_1.CommandId.SetChargeMosfet, state.val, id, "info.chargeMosOn");
+            void this.handleMosfetWrite(commands_1.CommandId.SetChargeMosfet, state.val, id, "info.chargeMosOn").catch(err => this.log.warn(`handleMosfetWrite (charge) failed: ${err.message}`));
         }
         else if (local === "control.dischargeMosfet") {
-            void this.handleMosfetWrite(commands_1.CommandId.SetDischargeMosfet, state.val, id, "info.dischargeMosOn");
+            void this.handleMosfetWrite(commands_1.CommandId.SetDischargeMosfet, state.val, id, "info.dischargeMosOn").catch(err => this.log.warn(`handleMosfetWrite (discharge) failed: ${err.message}`));
         }
     }
     /**
@@ -554,6 +556,15 @@ class DalyUsbAdapter extends utils.Adapter {
             return;
         }
         this.lastMosfetWriteAt = now;
+        this.mosfetWriteInFlight = true;
+        try {
+            await this.doMosfetWrite(command, on, controlId, readbackId);
+        }
+        finally {
+            this.mosfetWriteInFlight = false;
+        }
+    }
+    async doMosfetWrite(command, on, controlId, readbackId) {
         try {
             const req = (0, protocol_1.buildRequest)(this.config.hostAddress, command, (0, commands_1.buildMosfetPayload)(on));
             await this.transport.request(req, 1, command);

@@ -135,6 +135,8 @@ function combineCellVoltageFrames(frames, cellCount) {
  * DALY -40 offset (0 = -40 °C).
  */
 function parseTemperatureFrame(payload) {
+    if (payload.length < 8)
+        throw new Error(`truncated temperature frame (got ${payload.length} bytes, expected 8)`);
     const temps = [];
     for (let i = 1; i <= 7; i++)
         temps.push(payload[i] - 40);
@@ -186,6 +188,10 @@ exports.Bounds = {
  * bit `n` set means cell `n + 1` is currently balancing.
  */
 function parseBalancerState(payload, cellCount) {
+    const neededBytes = Math.ceil(cellCount / 8);
+    if (payload.length < neededBytes) {
+        throw new Error(`truncated balancer state (need ${neededBytes} bytes for ${cellCount} cells, got ${payload.length})`);
+    }
     const out = new Array(cellCount).fill(false);
     for (let i = 0; i < cellCount; i++) {
         const byte = payload[Math.floor(i / 8)] ?? 0;

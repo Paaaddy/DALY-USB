@@ -57,6 +57,7 @@ class DalyUsbAdapter extends utils.Adapter {
     private lastBmsLife?: number;
     private bmsLifeStuckCount = 0;
     private lastMosfetWriteAt = 0;
+    private mosfetWriteInFlight = false;
 
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({ ...options, name: "daly-usb" });
@@ -88,8 +89,8 @@ class DalyUsbAdapter extends utils.Adapter {
         const baudRate = Number(this.config.baudRate);
         const pollIntervalMs = Number(this.config.pollIntervalMs);
         const requestTimeoutMs = Number(this.config.requestTimeoutMs);
-        if (!baudRate || baudRate < 300 || baudRate > 115200) {
-            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 115200`);
+        if (!baudRate || baudRate < 300 || baudRate > 921600) {
+            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 921600`);
             return;
         }
         if (!pollIntervalMs || pollIntervalMs < 500) {
@@ -195,7 +196,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await wrap("0x90", () => this.tickPackMeasurements());
         await wrap("0x91", () => this.tickMinMaxCellVoltage());
         await wrap("0x92", () => this.tickMinMaxTemperature());
-        await wrap("0x93", () => this.tickMosfetStatus());
+        await wrap("0x93", () => this.tickMosfetStatus(!this.mosfetWriteInFlight));
         await wrap("0x94", () => this.tickStatusInfo());
         await wrap("0x95", () => this.tickCellVoltages(this.bms!.cellCount));
         await wrap("0x96", () => this.tickTemperatures(this.bms!.tempSensorCount));
@@ -286,7 +287,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await this.setStateChangedAsync("info.maxSensorNumber", m.maxSensorNumber, true);
     }
 
-    private async tickMosfetStatus(): Promise<void> {
+    private async tickMosfetStatus(publishMosState = true): Promise<void> {
         const m = await this.runCommand(CommandId.MosfetStatus, 1, parseMosfetStatus);
         if (this.lastBmsLife !== undefined) {
             if (m.bmsLife === this.lastBmsLife) {
@@ -303,8 +304,10 @@ class DalyUsbAdapter extends utils.Adapter {
         }
 
         await this.setStateChangedAsync("info.bmsState", m.state, true);
-        await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
-        await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        if (publishMosState) {
+            await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
+            await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        }
         await this.setStateChangedAsync("info.bmsLife", m.bmsLife, true);
         await this.setStateChangedAsync(
             "info.residualCapacity",
@@ -523,7 +526,6 @@ class DalyUsbAdapter extends utils.Adapter {
                 },
                 native: {},
             });
-            await this.setStateChangedAsync(`alarms.${def.key}`, false, true);
         }
     }
 
@@ -654,14 +656,14 @@ class DalyUsbAdapter extends utils.Adapter {
                 state.val,
                 id,
                 "info.chargeMosOn",
-            );
+            ).catch(err => this.log.warn(`handleMosfetWrite (charge) failed: ${(err as Error).message}`));
         } else if (local === "control.dischargeMosfet") {
             void this.handleMosfetWrite(
                 CommandId.SetDischargeMosfet,
                 state.val,
                 id,
                 "info.dischargeMosOn",
-            );
+            ).catch(err => this.log.warn(`handleMosfetWrite (discharge) failed: ${(err as Error).message}`));
         }
     }
 
@@ -696,10 +698,23 @@ class DalyUsbAdapter extends utils.Adapter {
             return;
         }
         this.lastMosfetWriteAt = now;
+        this.mosfetWriteInFlight = true;
+        try {
+            await this.doMosfetWrite(command, on, controlId, readbackId);
+        } finally {
+            this.mosfetWriteInFlight = false;
+        }
+    }
 
+    private async doMosfetWrite(
+        command: number,
+        on: boolean,
+        controlId: string,
+        readbackId: string,
+    ): Promise<void> {
         try {
             const req = buildRequest(this.config.hostAddress, command, buildMosfetPayload(on));
-            await this.transport.request(req, 1, command);
+            await this.transport!.request(req, 1, command);
             this.log.info(`sent ${controlId} -> ${on}`);
         } catch (err) {
             this.log.warn(`failed to write ${controlId}=${on}: ${(err as Error).message}`);

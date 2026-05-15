@@ -53,8 +53,9 @@ describe("Poller", () => {
 
     it("start() is idempotent", async () => {
         let tickCount = 0;
-        const tick = async (): Promise<void> => {
+        const tick = (): Promise<void> => {
             tickCount++;
+            return Promise.resolve();
         };
 
         const poller = new Poller(20, tick, noopLog);
@@ -71,9 +72,9 @@ describe("Poller", () => {
 
     it("a tick that throws does not stop the poller", async () => {
         let tickCount = 0;
-        const tick = async (): Promise<void> => {
+        const tick = (): Promise<void> => {
             tickCount++;
-            throw new Error("boom");
+            return Promise.reject(new Error("boom"));
         };
 
         const poller = new Poller(20, tick, noopLog);
