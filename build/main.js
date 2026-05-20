@@ -41,6 +41,8 @@ const transport_1 = require("./lib/daly/transport");
 const CONNECTION_DOWN_AFTER_FAILED_TICKS = 3;
 const HEARTBEAT_STUCK_LIMIT = 5;
 const MOSFET_WRITE_DEBOUNCE_MS = 2000;
+const MOSFET_WRITE_WATCHDOG_MS = 30_000;
+const MOSFET_WRITE_DRAIN_MS = 10_000;
 class DalyUsbAdapter extends utils.Adapter {
     transport;
     poller;
@@ -53,6 +55,7 @@ class DalyUsbAdapter extends utils.Adapter {
     lastBmsLife;
     bmsLifeStuckCount = 0;
     lastMosfetWriteAt = 0;
+    mosfetWriteInFlight = false;
     constructor(options = {}) {
         super({ ...options, name: "daly-usb" });
         this.on("ready", this.onReady.bind(this));
@@ -72,11 +75,17 @@ class DalyUsbAdapter extends utils.Adapter {
             this.log.error(`invalid serialPort "${serialPort}": must be under /dev/tty* or /dev/serial/by-id/`);
             return;
         }
+        if (!/\/dev\/serial\/(by-id|by-path)\//.test(serialPort)) {
+            this.log.warn(`serialPort "${serialPort}" is not a stable path. If other USB devices are ` +
+                `added or removed, the OS may reassign this path to a different device and ` +
+                `DALY commands could be sent to wrong hardware. ` +
+                `Use /dev/serial/by-id/... for a device-specific stable path.`);
+        }
         const baudRate = Number(this.config.baudRate);
         const pollIntervalMs = Number(this.config.pollIntervalMs);
         const requestTimeoutMs = Number(this.config.requestTimeoutMs);
-        if (!baudRate || baudRate < 300 || baudRate > 115200) {
-            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 115200`);
+        if (!baudRate || baudRate < 300 || baudRate > 921600) {
+            this.log.error(`invalid baudRate ${baudRate}: must be between 300 and 921600`);
             return;
         }
         if (!pollIntervalMs || pollIntervalMs < 500) {
@@ -124,6 +133,7 @@ class DalyUsbAdapter extends utils.Adapter {
         }
         this.poller = new poller_1.Poller(pollIntervalMs, () => this.poll(), this.log);
         this.poller.start();
+        await this.setStateChangedAsync("info.mosfetWriteFailed", false, true);
     }
     async discover() {
         const RETRIES = 3;
@@ -165,7 +175,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await wrap("0x90", () => this.tickPackMeasurements());
         await wrap("0x91", () => this.tickMinMaxCellVoltage());
         await wrap("0x92", () => this.tickMinMaxTemperature());
-        await wrap("0x93", () => this.tickMosfetStatus());
+        await wrap("0x93", () => this.tickMosfetStatus(!this.mosfetWriteInFlight));
         await wrap("0x94", () => this.tickStatusInfo());
         await wrap("0x95", () => this.tickCellVoltages(this.bms.cellCount));
         await wrap("0x96", () => this.tickTemperatures(this.bms.tempSensorCount));
@@ -176,9 +186,11 @@ class DalyUsbAdapter extends utils.Adapter {
             if (this.consecutiveTickFailures >= CONNECTION_DOWN_AFTER_FAILED_TICKS &&
                 !this.connectionDown) {
                 this.connectionDown = true;
+                this.lastVoltage = NaN;
                 await this.setState("info.connection", false, true);
                 await this.setState("info.chargeMosOn", null, true);
                 await this.setState("info.dischargeMosOn", null, true);
+                await this.clearStaleStates();
                 this.log.warn(`${this.consecutiveTickFailures} consecutive ticks with failures — flagging info.connection=false`);
             }
         }
@@ -234,7 +246,7 @@ class DalyUsbAdapter extends utils.Adapter {
         await this.setStateChangedAsync("info.minSensorNumber", m.minSensorNumber, true);
         await this.setStateChangedAsync("info.maxSensorNumber", m.maxSensorNumber, true);
     }
-    async tickMosfetStatus() {
+    async tickMosfetStatus(publishMosState = true) {
         const m = await this.runCommand(commands_1.CommandId.MosfetStatus, 1, commands_1.parseMosfetStatus);
         if (this.lastBmsLife !== undefined) {
             if (m.bmsLife === this.lastBmsLife) {
@@ -249,8 +261,10 @@ class DalyUsbAdapter extends utils.Adapter {
             throw new Error(`BMS heartbeat (bmsLife) unchanged for ${this.bmsLifeStuckCount} reads — BMS may be locked up`);
         }
         await this.setStateChangedAsync("info.bmsState", m.state, true);
-        await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
-        await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        if (publishMosState) {
+            await this.setStateChangedAsync("info.chargeMosOn", m.chargeMosOn, true);
+            await this.setStateChangedAsync("info.dischargeMosOn", m.dischargeMosOn, true);
+        }
         await this.setStateChangedAsync("info.bmsLife", m.bmsLife, true);
         await this.setStateChangedAsync("info.residualCapacity", Number(m.residualCapacityAh.toFixed(3)), true);
         if (!isNaN(this.lastVoltage)) {
@@ -356,6 +370,38 @@ class DalyUsbAdapter extends utils.Adapter {
             return false;
         }
     }
+    /**
+     * Null out all real-time telemetry states when the BMS goes offline.
+     * Automations must not act on stale data — explicit null values signal
+     * "unknown" so any automation that reads without first checking
+     * info.connection will see null rather than a plausible-but-stale value.
+     * Alarm flags are intentionally preserved: a stale alarm is safer to
+     * keep visible than to silently clear it while the BMS is unreachable.
+     */
+    async clearStaleStates() {
+        const ids = [
+            "info.voltage", "info.current", "info.soc",
+            "info.bmsState", "info.chargerConnected", "info.loadConnected",
+            "info.minCellVoltage", "info.maxCellVoltage", "info.cellDiff",
+            "info.minCellNumber", "info.maxCellNumber",
+            "info.minTemperature", "info.maxTemperature",
+            "info.minSensorNumber", "info.maxSensorNumber",
+            "info.residualCapacity", "info.energyRemaining",
+            "info.bmsLife",
+        ];
+        for (const id of ids) {
+            await this.setState(id, null, true);
+        }
+        if (this.bms) {
+            for (let i = 1; i <= this.bms.cellCount; i++) {
+                await this.setState(`cells.cell_${i}`, null, true);
+                await this.setState(`balancer.cell_${i}`, null, true);
+            }
+            for (let i = 1; i <= this.bms.tempSensorCount; i++) {
+                await this.setState(`temps.sensor_${i}`, null, true);
+            }
+        }
+    }
     async ensureCoreObjects() {
         await this.makeChannel("cells", "Per-cell voltages");
         await this.makeChannel("temps", "Temperature sensors");
@@ -418,7 +464,6 @@ class DalyUsbAdapter extends utils.Adapter {
                 },
                 native: {},
             });
-            await this.setStateChangedAsync(`alarms.${def.key}`, false, true);
         }
     }
     async syncDynamicObjects(bms) {
@@ -494,6 +539,19 @@ class DalyUsbAdapter extends utils.Adapter {
         catch {
             /* ignore — best-effort cleanup */
         }
+        // Drain any in-flight MOSFET write before closing the transport.
+        // Closing the port mid-write could send a partial frame to the BMS,
+        // leaving a MOSFET in an unknown state.
+        if (this.mosfetWriteInFlight) {
+            const drainStart = Date.now();
+            while (this.mosfetWriteInFlight && Date.now() - drainStart < MOSFET_WRITE_DRAIN_MS) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+            if (this.mosfetWriteInFlight) {
+                this.log.error(`onUnload: MOSFET write still in flight after ${MOSFET_WRITE_DRAIN_MS}ms — forcing teardown`);
+                this.mosfetWriteInFlight = false;
+            }
+        }
         try {
             await this.poller?.stop();
         }
@@ -525,10 +583,10 @@ class DalyUsbAdapter extends utils.Adapter {
         }
         const local = id.slice(this.namespace.length + 1);
         if (local === "control.chargeMosfet") {
-            void this.handleMosfetWrite(commands_1.CommandId.SetChargeMosfet, state.val, id, "info.chargeMosOn");
+            void this.handleMosfetWrite(commands_1.CommandId.SetChargeMosfet, state.val, id, "info.chargeMosOn").catch(err => this.log.warn(`handleMosfetWrite (charge) failed: ${err.message}`));
         }
         else if (local === "control.dischargeMosfet") {
-            void this.handleMosfetWrite(commands_1.CommandId.SetDischargeMosfet, state.val, id, "info.dischargeMosOn");
+            void this.handleMosfetWrite(commands_1.CommandId.SetDischargeMosfet, state.val, id, "info.dischargeMosOn").catch(err => this.log.warn(`handleMosfetWrite (discharge) failed: ${err.message}`));
         }
     }
     /**
@@ -554,6 +612,32 @@ class DalyUsbAdapter extends utils.Adapter {
             return;
         }
         this.lastMosfetWriteAt = now;
+        this.mosfetWriteInFlight = true;
+        // Watchdog: force-clear the flag if the write somehow hangs longer than
+        // MOSFET_WRITE_WATCHDOG_MS (e.g., transport stalls beyond its own timeout).
+        // Without this, a hung write would permanently suppress MOSFET state updates.
+        const watchdog = setTimeout(() => {
+            if (this.mosfetWriteInFlight) {
+                this.log.error(`MOSFET write watchdog fired after ${MOSFET_WRITE_WATCHDOG_MS}ms — ` +
+                    `clearing in-flight flag to restore normal polling`);
+                this.mosfetWriteInFlight = false;
+            }
+        }, MOSFET_WRITE_WATCHDOG_MS);
+        try {
+            // Re-check connection inside the critical section: the BMS could have gone
+            // offline between the initial check (above) and here.
+            if (this.connectionDown) {
+                this.log.warn(`${controlId}: connection went down before write could be sent — aborting`);
+                return;
+            }
+            await this.doMosfetWrite(command, on, controlId, readbackId);
+        }
+        finally {
+            clearTimeout(watchdog);
+            this.mosfetWriteInFlight = false;
+        }
+    }
+    async doMosfetWrite(command, on, controlId, readbackId) {
         try {
             const req = (0, protocol_1.buildRequest)(this.config.hostAddress, command, (0, commands_1.buildMosfetPayload)(on));
             await this.transport.request(req, 1, command);
@@ -563,13 +647,26 @@ class DalyUsbAdapter extends utils.Adapter {
             this.log.warn(`failed to write ${controlId}=${on}: ${err.message}`);
             return;
         }
-        try {
-            await this.tickMosfetStatus();
-        }
-        catch (err) {
-            this.log.warn(`readback after ${controlId} write failed: ${err.message}`);
-            await this.setStateChangedAsync("info.mosfetWriteFailed", true, true);
-            return;
+        // Retry the readback once on failure. A transient serial glitch after a
+        // successful write should not leave the MOSFET state permanently unknown.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                await this.tickMosfetStatus();
+                break;
+            }
+            catch (err) {
+                if (attempt === 1) {
+                    this.log.warn(`readback after ${controlId} write failed (attempt 1): ` +
+                        `${err.message} — retrying in 200ms`);
+                    await new Promise(r => setTimeout(r, 200));
+                }
+                else {
+                    this.log.error(`readback after ${controlId} write failed (attempt 2): ` +
+                        `${err.message} — MOSFET state unknown`);
+                    await this.setStateChangedAsync("info.mosfetWriteFailed", true, true);
+                    return;
+                }
+            }
         }
         const readback = await this.getStateAsync(readbackId);
         const actual = readback?.val;

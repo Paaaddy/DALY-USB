@@ -186,6 +186,7 @@ export interface TemperatureFrame {
  * DALY -40 offset (0 = -40 °C).
  */
 export function parseTemperatureFrame(payload: Buffer): TemperatureFrame {
+    if (payload.length < 8) throw new Error(`truncated temperature frame (got ${payload.length} bytes, expected 8)`);
     const temps: number[] = [];
     for (let i = 1; i <= 7; i++) temps.push(payload[i] - 40);
     return { frameIndex: payload[0], temperatures: temps };
@@ -248,6 +249,10 @@ export const Bounds = {
  * bit `n` set means cell `n + 1` is currently balancing.
  */
 export function parseBalancerState(payload: Buffer, cellCount: number): boolean[] {
+    const neededBytes = Math.ceil(cellCount / 8);
+    if (payload.length < neededBytes) {
+        throw new Error(`truncated balancer state (need ${neededBytes} bytes for ${cellCount} cells, got ${payload.length})`);
+    }
     const out = new Array<boolean>(cellCount).fill(false);
     for (let i = 0; i < cellCount; i++) {
         const byte = payload[Math.floor(i / 8)] ?? 0;

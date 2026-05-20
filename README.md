@@ -24,6 +24,18 @@ ioBroker adapter that polls a DALY BMS over a USB-UART adapter and exposes its f
   and `info.lastAlarmUpdate` give automations a clear signal when the BMS is
   unreachable or the alarm data is stale.
 
+## Installation
+
+This adapter is not yet in the ioBroker adapter list. Install it directly from GitHub:
+
+```bash
+iobroker url https://github.com/LeoTronick/DALY-USB
+```
+
+Or via the ioBroker admin UI: go to **Adapters → Install from custom URL** and enter `https://github.com/LeoTronick/DALY-USB`.
+
+> **Note:** The GitHub repository is named `DALY-USB`, not `ioBroker.daly-usb`. Using the wrong name results in `npm error code 128` (repository not found).
+
 ## Configuration
 
 Open the adapter settings in the ioBroker admin and configure:

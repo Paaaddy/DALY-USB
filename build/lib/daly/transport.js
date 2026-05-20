@@ -30,6 +30,15 @@ class DalyTransport {
         });
         this.parser = this.port.pipe(new serialport_1.ByteLengthParser({ length: protocol_1.FRAME_LENGTH }));
         this.parser.on("data", (data) => this.onFrame(data));
+        this.parser.on("error", (err) => {
+            this.opts.log.error(`parser error: ${err.message}`);
+            if (this.waiter) {
+                const w = this.waiter;
+                this.waiter = undefined;
+                clearTimeout(w.timer);
+                w.reject(err);
+            }
+        });
         this.port.on("error", (err) => {
             this.opts.log.error(`serial error: ${err.message}`);
             if (this.waiter) {
@@ -114,8 +123,11 @@ class DalyTransport {
             clearTimeout(w.timer);
             w.resolve(data);
         }
-        else {
+        else if (this.incoming.length < MAX_QUEUE_DEPTH) {
             this.incoming.push(data);
+        }
+        else {
+            this.opts.log.warn(`incoming frame buffer full (${MAX_QUEUE_DEPTH}), dropping unsolicited frame`);
         }
     }
     awaitFrame() {
