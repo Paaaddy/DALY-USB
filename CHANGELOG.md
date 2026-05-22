@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.3](https://github.com/LeoTronick/DALY-USB/compare/v0.2.2...v0.2.3) (2026-05-20)
+
+
+### Bug Fixes
+
+* close hardware safety gaps in MOSFET write path ([0015699](https://github.com/LeoTronick/DALY-USB/commit/0015699e884f649a2640fb0441d1f2217b86cb94))
+* harden adapter for production reliability ([2dbdd12](https://github.com/LeoTronick/DALY-USB/commit/2dbdd122b0fd439d6a342d2ab229a62cb0ce758c))
+* hardware safety hardening + production reliability ([0d596d7](https://github.com/LeoTronick/DALY-USB/commit/0d596d76381dc5ad01e5811ea2894cb87e1115a2))
+* null all volatile telemetry on connection loss to prevent stale-data hazards ([42a143d](https://github.com/LeoTronick/DALY-USB/commit/42a143d545cdd587e56bf2a55998f5ae06fc0301))
+
 ## [0.2.2](https://github.com/LeoTronick/DALY-USB/compare/v0.2.1...v0.2.2) (2026-05-14)
 
 
