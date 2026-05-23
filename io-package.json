@@ -3,6 +3,14 @@
     "name": "daly-usb",
     "version": "0.2.3",
     "news": {
+      "0.2.3": {
+        "en": "harden MOSFET write path and null volatile telemetry on connection loss",
+        "de": "MOSFET-Schreibpfad gehärtet und flüchtige Telemetrie bei Verbindungsabbruch auf null gesetzt"
+      },
+      "0.2.2": {
+        "en": "remove prepare script so git installs use committed build output",
+        "de": "prepare-Skript entfernt, damit git-Installationen das eingecheckte Build-Ergebnis verwenden"
+      },
       "0.2.1": {
         "en": "remove prepare script so npm git installs use committed build output",
         "de": "prepare-Skript entfernt, damit npm-Git-Installationen das eingecheckte Build-Ergebnis verwenden"

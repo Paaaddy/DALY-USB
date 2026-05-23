@@ -26,15 +26,15 @@ ioBroker adapter that polls a DALY BMS over a USB-UART adapter and exposes its f
 
 ## Installation
 
-This adapter is not yet in the ioBroker adapter list. Install it directly from GitHub:
+This adapter is not yet in the ioBroker adapter list. Install it directly from GitHub using the **two-argument form** (the second argument tells ioBroker the adapter name):
 
 ```bash
-iobroker url https://github.com/LeoTronick/DALY-USB
+iobroker url https://github.com/LeoTronick/DALY-USB daly-usb
 ```
 
-Or via the ioBroker admin UI: go to **Adapters → Install from custom URL** and enter `https://github.com/LeoTronick/DALY-USB`.
+> **Why the second argument?** ioBroker derives the adapter name from the GitHub repo name. Because this repo is named `DALY-USB` instead of the ioBroker convention `ioBroker.daly-usb`, ioBroker cannot find the installed package after npm finishes and exits with code 25. Passing `daly-usb` explicitly bypasses the name-derivation logic.
 
-> **Note:** The GitHub repository is named `DALY-USB`, not `ioBroker.daly-usb`. Using the wrong name results in `npm error code 128` (repository not found).
+The Admin UI custom-URL installer does not expose the second argument — use the CLI command above.
 
 ## Configuration
 
