@@ -1,0 +1,21 @@
+name: Cleanup PR caches
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete branch caches
+        run: |
+          gh extension install actions/gh-actions-cache
+          BRANCH="refs/pull/${{ github.event.pull_request.number }}/merge"
+          echo "Deleting caches for $BRANCH"
+          gh actions-cache list -R ${{ github.repository }} -B "$BRANCH" --json id -q '.[].id' \
+            | xargs -r -I{} gh actions-cache delete {} -R ${{ github.repository }} --confirm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
