@@ -1,7 +1,7 @@
 {
   "common": {
     "name": "daly-usb",
-    "version": "0.2.3",
+    "version": "0.3.0",
     "news": {
       "0.2.3": {
         "en": "harden MOSFET write path and null volatile telemetry on connection loss",
